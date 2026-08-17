@@ -1,0 +1,268 @@
+# Deploy pipeline -- push to main: test/lint -> build+push both images ->
+# terraform apply. See the trailing comment block at the bottom of this
+# file for the one-time setup this pipeline needs before it can run at all
+# (OIDC role, remote state bucket, GitHub secrets/variables/environment).
+# None of that is automated here on purpose: it is bootstrap infrastructure
+# this pipeline itself depends on, so it cannot also be what creates it.
+name: Deploy
+
+on:
+  push:
+    branches: [main]
+  # Lets a human trigger a re-deploy (e.g. after only an AWS-side change)
+  # without needing an empty commit.
+  workflow_dispatch: {}
+
+# Default at the workflow level; each job that calls
+# aws-actions/configure-aws-credentials also declares its own copy
+# explicitly (job-level permissions fully replace, not merge with, the
+# workflow-level default in the GitHub Actions permission model -- being
+# explicit per job avoids a silent gap if this default is ever narrowed).
+permissions:
+  id-token: write # required for OIDC -> sts:AssumeRoleWithWebIdentity
+  contents: read
+
+env:
+  AWS_REGION: us-east-1
+  ECR_REPO_BACKEND: medical-rag/backend
+  ECR_REPO_FRONTEND: medical-rag/frontend
+
+jobs:
+  # ===========================================================================
+  # JOB 1: Test & Lint
+  # ===========================================================================
+  test-and-lint:
+    name: Test & Lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Install lint tools
+        run: pip install flake8
+
+      # Scoped to E9/F63/F7/F82 -- genuine syntax errors, undefined names,
+      # and comparably serious issues -- not full style linting. VERIFIED
+      # directly against this exact codebase before choosing this over
+      # `black --check`: black would reformat 12 of 14 top-level modules
+      # (this repo was never written to black's conventions), which would
+      # make this job fail on line-wrapping/quote-style on its very first
+      # run, on files with no actual bug -- exactly the kind of check that
+      # trains a team to ignore CI failures. flake8 at this scope passes
+      # cleanly today and still catches what the spec actually asked for:
+      # "standard Python syntax checks."
+      - name: flake8 (syntax errors / undefined names)
+        run: |
+          flake8 . --count --select=E9,F63,F7,F82 --show-source --statistics \
+            --exclude=.venv,.venv-kg,node_modules,frontend,.git
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install frontend dependencies
+        working-directory: frontend
+        run: npm ci
+
+      - name: Next.js lint
+        working-directory: frontend
+        run: npm run lint
+
+      - name: TypeScript check
+        working-directory: frontend
+        run: npx tsc --noEmit
+
+  # ===========================================================================
+  # JOB 2: Build & Push (Backend)
+  # ===========================================================================
+  build-backend:
+    name: Build & Push (Backend)
+    needs: test-and-lint
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Login to Amazon ECR
+        id: ecr-login
+        uses: aws-actions/amazon-ecr-login@v2
+
+      # Tagged with the commit SHA (immutable, traceable to an exact
+      # commit) AND :latest (so a manual `docker pull ...:latest` still
+      # works for local debugging) -- the SHA tag, not :latest, is what
+      # the Terraform Apply job below actually deploys, so there is no
+      # race between "which image does :latest point at right now" and
+      # what this run built.
+      - name: Build and push backend image
+        env:
+          ECR_REGISTRY: ${{ steps.ecr-login.outputs.registry }}
+        run: |
+          docker build -f Dockerfile.backend \
+            -t "$ECR_REGISTRY/$ECR_REPO_BACKEND:${{ github.sha }}" \
+            -t "$ECR_REGISTRY/$ECR_REPO_BACKEND:latest" \
+            .
+          docker push "$ECR_REGISTRY/$ECR_REPO_BACKEND:${{ github.sha }}"
+          docker push "$ECR_REGISTRY/$ECR_REPO_BACKEND:latest"
+
+  # ===========================================================================
+  # JOB 3: Build & Push (Frontend)
+  # ===========================================================================
+  build-frontend:
+    name: Build & Push (Frontend)
+    needs: test-and-lint
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Login to Amazon ECR
+        id: ecr-login
+        uses: aws-actions/amazon-ecr-login@v2
+
+      # NEXT_PUBLIC_API_URL is a repo VARIABLE (vars.*), not a secret --
+      # it's the ALB's public DNS name, already visible to anyone who
+      # loads the site. See frontend/Dockerfile's own comment for why this
+      # MUST be a build arg (Next.js inlines NEXT_PUBLIC_* into the client
+      # bundle at build time, not read at container start) and
+      # terraform/main.tf's aws_ecs_task_definition.frontend comment for
+      # the deploy-ORDERING note this implies: set vars.NEXT_PUBLIC_API_URL
+      # once, to the CURRENT `terraform output -raw alb_dns_name`, after
+      # the ALB exists -- see this file's trailing setup notes for the
+      # one-time bootstrap sequence on a brand new stack where it doesn't
+      # exist yet.
+      - name: Build and push frontend image
+        env:
+          ECR_REGISTRY: ${{ steps.ecr-login.outputs.registry }}
+        run: |
+          docker build \
+            --build-arg NEXT_PUBLIC_API_URL="${{ vars.NEXT_PUBLIC_API_URL }}" \
+            -t "$ECR_REGISTRY/$ECR_REPO_FRONTEND:${{ github.sha }}" \
+            -t "$ECR_REGISTRY/$ECR_REPO_FRONTEND:latest" \
+            ./frontend
+          docker push "$ECR_REGISTRY/$ECR_REPO_FRONTEND:${{ github.sha }}"
+          docker push "$ECR_REGISTRY/$ECR_REPO_FRONTEND:latest"
+
+  # ===========================================================================
+  # JOB 4: Terraform Apply
+  # ===========================================================================
+  terraform-apply:
+    name: Terraform Apply
+    needs: [build-backend, build-frontend]
+    runs-on: ubuntu-latest
+    # Requires a "production" Environment to be configured in this repo's
+    # Settings -> Environments, with required reviewers, for this to
+    # actually gate on human approval. Left referenced, not optional:
+    # auto-applying real infrastructure changes on every push to main with
+    # zero human check is a real risk this pipeline should not ship with
+    # silently, even though the base spec didn't call it out explicitly.
+    # If the Environment isn't configured, this reference is a harmless
+    # no-op and the job runs unblocked -- it does not fail the pipeline.
+    environment: production
+    permissions:
+      id-token: write
+      contents: read
+    defaults:
+      run:
+        working-directory: terraform
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "1.15.8"
+
+      # bucket/dynamodb_table are supplied here, not hardcoded in
+      # terraform/main.tf's backend block, because Terraform backend
+      # blocks cannot reference variables -- see that block's own comment
+      # and provision_terraform_backend.sh, which is what creates the
+      # bucket/table these secrets point at (a one-time, human-run
+      # bootstrap step, not part of this pipeline).
+      # No -backend-config= flags needed (and none passed): main.tf's
+      # backend "s3" block now has the bucket/region/dynamodb_table values
+      # hardcoded directly -- not secret, so committing them is fine, and
+      # simpler for CI than sourcing them from GitHub secrets on every run.
+      - name: Terraform Init
+        run: terraform init
+
+      - name: Terraform Validate
+        run: terraform validate
+
+      - name: Terraform Plan
+        run: |
+          terraform plan -out=tfplan \
+            -var="backend_image_tag=${{ github.sha }}" \
+            -var="frontend_image_tag=${{ github.sha }}" \
+            -var="github_repository=${{ github.repository }}" \
+            -var="anthropic_api_key=${{ secrets.ANTHROPIC_API_KEY }}" \
+            -var="openai_api_key=${{ secrets.OPENAI_API_KEY }}" \
+            -var="jwt_secret_key=${{ secrets.JWT_SECRET_KEY }}" \
+            -var="neo4j_password=${{ secrets.NEO4J_PASSWORD }}"
+
+      - name: Terraform Apply
+        run: terraform apply -auto-approve tfplan
+
+# =============================================================================
+# ONE-TIME SETUP this pipeline needs before it can run successfully -- none
+# of it is automated by this workflow or any script in this repo, because
+# each piece is a prerequisite FOR this pipeline (chicken-and-egg), not
+# something the pipeline can bootstrap for itself:
+#
+# 1. AWS OIDC + deploy role (terraform/main.tf's aws_iam_openid_connect_provider
+#    .github_actions / aws_iam_role.github_actions_deploy) -- apply this
+#    from a trusted local session, THEN:
+#      - Repo secret AWS_DEPLOY_ROLE_ARN = terraform output github_actions_deploy_role_arn
+#
+# 2. Remote Terraform state (see provision_terraform_backend.sh) -- its
+#    bucket/dynamodb_table are hardcoded directly in main.tf's backend "s3"
+#    block (not secret, no GitHub secret needed for them). Migrate this
+#    stack's ALREADY-LIVE local state once, from a trusted local session
+#    (do not skip this on an existing deployment -- see that script's own
+#    header for why):
+#      cd terraform && terraform init -migrate-state
+#
+# 3. Application secrets (repo Settings -> Secrets and variables -> Actions):
+#      - ANTHROPIC_API_KEY, OPENAI_API_KEY, JWT_SECRET_KEY, NEO4J_PASSWORD
+#        (same values as this repo's local .env)
+#
+# 4. Repo VARIABLE (not secret) NEXT_PUBLIC_API_URL = http://<alb_dns_name>
+#    -- get the current value with `terraform output -raw alb_dns_name`.
+#    On a stack where the ALB does not exist yet, see
+#    terraform/main.tf's aws_ecs_task_definition.frontend comment for the
+#    one-time manual sequence (apply the ALB first, THEN build/push the
+#    frontend image, THEN apply again) -- not a problem this recurring
+#    pipeline needs to solve, since the ALB's DNS name is stable once it
+#    exists.
+#
+# 5. (Recommended) A "production" Environment in Settings -> Environments,
+#    with required reviewers, so Job 4 gates on human approval before
+#    mutating real infrastructure.
+# =============================================================================

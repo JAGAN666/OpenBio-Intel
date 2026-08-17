@@ -1,0 +1,22 @@
+# Backend build context (Dockerfile.backend, context: .)
+#
+# .env is excluded DELIBERATELY -- it holds real API keys. Docker COPY would
+# bake it into an image layer permanently (recoverable from `docker history`
+# even after a later layer "deletes" it). Secrets reach the container via
+# docker-compose's `env_file:` at runtime instead, never via COPY.
+.env
+.env.*
+!.env.template
+
+.venv/
+__pycache__/
+*.pyc
+.git/
+.gitignore
+
+# Not needed inside the backend image
+frontend/
+qdrant_storage/
+data/
+eval_traces/
+*.md

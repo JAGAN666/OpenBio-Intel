@@ -1,0 +1,76 @@
+{
+  "$defs": {
+    "TrialRow": {
+      "description": "One row of the comparative trials grid.",
+      "properties": {
+        "nct_id": {
+          "description": "The trial's NCT identifier, e.g. NCT06712888. Must be copied exactly from a retrieved record \u2014 never invented.",
+          "title": "Nct Id",
+          "type": "string"
+        },
+        "sponsor": {
+          "description": "Lead sponsor organisation running the trial.",
+          "title": "Sponsor",
+          "type": "string"
+        },
+        "phase": {
+          "description": "Trial phase as a display string, e.g. 'Phase 3' or 'Phase 2/Phase 3' when the trial spans both.",
+          "title": "Phase",
+          "type": "string"
+        },
+        "interventions": {
+          "description": "The specific intervention names being tested, taken from the record's structured `interventions` field. Prefer therapeutic agents (drugs/biologics) over assessment procedures such as CT or biospecimen collection.",
+          "items": {
+            "type": "string"
+          },
+          "title": "Interventions",
+          "type": "array"
+        },
+        "mechanism_or_findings": {
+          "description": "One to two sentences on the mechanism or key finding, taken ONLY from the retrieved trial text. Never supply a mechanism from prior knowledge \u2014 an unsupported claim is worse than a gap. If the mechanism is absent, describe whatever trial design or clinical findings are available in the text, and ensure the boolean flag is set to False.",
+          "title": "Mechanism Or Findings",
+          "type": "string"
+        },
+        "mechanism_described": {
+          "description": "True ONLY if the retrieved text explicitly names the mechanism of action or biological target of the primary intervention. False if the mechanism/target is not stated, even if other trial design details (like biomarkers) are present.",
+          "title": "Mechanism Described",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "nct_id",
+        "sponsor",
+        "phase",
+        "interventions",
+        "mechanism_or_findings",
+        "mechanism_described"
+      ],
+      "title": "TrialRow",
+      "type": "object",
+      "additionalProperties": false
+    }
+  },
+  "description": "Final agent output: prose answer + machine-renderable grid.",
+  "properties": {
+    "narrative_summary": {
+      "description": "The high-level analytical answer to the user's question. Every factual claim must cite its NCT id in brackets, e.g. 'targets PD-1 [NCT01234567]'.",
+      "title": "Narrative Summary",
+      "type": "string"
+    },
+    "table_data": {
+      "description": "One TrialRow for every distinct trial retrieved from the database. This array backs the frontend data grid.",
+      "items": {
+        "$ref": "#/$defs/TrialRow"
+      },
+      "title": "Table Data",
+      "type": "array"
+    }
+  },
+  "required": [
+    "narrative_summary",
+    "table_data"
+  ],
+  "title": "SmartTableResponse",
+  "type": "object",
+  "additionalProperties": false
+}

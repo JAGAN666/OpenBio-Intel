@@ -1,0 +1,164 @@
+{
+  "narrative_summary": "**Direct answer:** The retrieved corpus contains exactly one Phase 3 trial testing rilvegostomig and one Phase 2/3 trial testing pumitamig. Neither record states the molecular target or modality of these two agents, so no mechanism can be attributed to them from this corpus.\n\n**Rilvegostomig — ARTEMIDE-Lung02 [NCT06692738].** Sponsored by AstraZeneca, this global Phase 3 study evaluates rilvegostomig in combination with platinum-based chemotherapy (carboplatin plus paclitaxel or nab-paclitaxel) versus pembrolizumab plus chemotherapy for first-line treatment of locally advanced or metastatic squamous NSCLC in patients whose tumours express PD-L1 [NCT06692738]. The record specifies the PD-L1-expressing biomarker- selected population and the active comparator, but does not describe rilvegostomig's target or antibody format.\n\n**Pumitamig (BNT327) [NCT06712316].** Sponsored by BioNTech SE, this Phase 2/3 multisite, randomised, open-label study tests pumitamig in combination with chemotherapy and other investigational agents in first-line NSCLC, with two substudies split by histological subtype because chemotherapy standard- of-care differs; interventions include pumitamig, pembrolizumab, carboplatin, pemetrexed and paclitaxel [NCT06712316]. Again, the record does not state the drug's target or mechanism.\n\n**Shared design features.** Both trials are first-line NSCLC studies that pair a novel agent with platinum-based chemotherapy and use pembrolizumab as the comparator or combination backbone [NCT06692738][NCT06712316] — making them the closest head-to-head-adjacent programmes in this corpus, even though the two agents' mechanisms are not documented here.\n\n**Contextual Phase 3 comparators retrieved (mechanisms explicitly stated).** Several other retrieved trials do describe mechanisms and provide a benchmark for what \"mechanism-described\" looks like: brentuximab vedotin is an antibody-drug conjugate whose antibody binds CD30-positive lymphoma cells to deliver the cytotoxin vedotin, alongside nivolumab, a monoclonal antibody that helps the immune system attack cancer [NCT05675410]; sacituzumab govitecan-hziy attaches to TROP2-positive tumour cells to deliver govitecan- hziy, combined with pembrolizumab in advanced urothelial carcinoma [NCT06524544]; ramucirumab is described as a monoclonal antibody that prevents tumour angiogenesis, and paclitaxel as an antimicrotubule agent, in the PARAMUNE gastroesophageal trial [NCT06203600]; zongertinib is described as an oral HER2-targeted treatment in resected HER2 TKD-mutant NSCLC [NCT07195695]; and ribociclib is said to block enzymes needed for cell growth, with aromatase inhibitors lowering estrogen [NCT07391774].\n\n**Gap statement.** The corpus returned no rilvegostomig trials in biliary tract, gastric or other tumour types, and no pumitamig trials outside NSCLC, despite targeted queries. Any claim about rilvegostomig or pumitamig being bispecific antibodies, or about PD-1/TIGIT or PD-L1/VEGF targeting, is not supported by these records.",
+  "table_data": [
+    {
+      "nct_id": "NCT06692738",
+      "sponsor": "AstraZeneca",
+      "phase": "Phase 3",
+      "interventions": [
+        "Rilvegostomig",
+        "Pembrolizumab",
+        "Carboplatin",
+        "Paclitaxel",
+        "Nab-paclitaxel"
+      ],
+      "mechanism_or_findings": "ARTEMIDE-Lung02 assesses efficacy and safety of rilvegostomig plus platinum-based chemotherapy for first-line locally advanced or metastatic squamous NSCLC in patients whose tumors express PD-L1, with pembrolizumab plus chemotherapy as comparator. The record does not state rilvegostomig's molecular target or modality.",
+      "mechanism_described": false
+    },
+    {
+      "nct_id": "NCT06712316",
+      "sponsor": "BioNTech SE",
+      "phase": "Phase 2/Phase 3",
+      "interventions": [
+        "Pumitamig",
+        "Pembrolizumab",
+        "Carboplatin",
+        "Pemetrexed",
+        "Paclitaxel"
+      ],
+      "mechanism_or_findings": "Multisite, randomized, open-label Phase 2/3 study of BNT327 (pumitamig) combined with chemotherapy and other investigational agents in first-line NSCLC, with two substudies (A and B) enrolling by histological subtype due to differing standard-of-care chemotherapy. No target or mechanism for pumitamig is described in the record.",
+      "mechanism_described": false
+    },
+    {
+      "nct_id": "NCT05675410",
+      "sponsor": "National Cancer Institute (NCI)",
+      "phase": "Phase 3",
+      "interventions": [
+        "Brentuximab Vedotin",
+        "Nivolumab",
+        "Bleomycin Sulfate",
+        "Doxorubicin Hydrochloride",
+        "Vinblastine Sulfate",
+        "Dacarbazine",
+        "Procarbazine Hydrochloride",
+        "Cyclophosphamide",
+        "Etoposide",
+        "Vincristine Sulfate",
+        "Prednisone"
+      ],
+      "mechanism_or_findings": "Brentuximab vedotin is an antibody-drug conjugate in which the brentuximab antibody attaches to CD30-positive lymphoma cells and delivers the cytotoxic agent vedotin; nivolumab is a monoclonal antibody that helps the immune system attack the cancer. Added to standard chemotherapy +/- radiation in stage I-II classical Hodgkin lymphoma.",
+      "mechanism_described": true
+    },
+    {
+      "nct_id": "NCT06203600",
+      "sponsor": "National Cancer Institute (NCI)",
+      "phase": "Phase 2/Phase 3",
+      "interventions": [
+        "Nivolumab",
+        "Ramucirumab",
+        "Paclitaxel"
+      ],
+      "mechanism_or_findings": "PARAMUNE adds nivolumab (a monoclonal antibody that helps the immune system attack cancer) to paclitaxel and ramucirumab in advanced gastric/esophageal adenocarcinoma; ramucirumab is described as a monoclonal antibody preventing growth of new tumor blood vessels, and paclitaxel as an antimicrotubule agent.",
+      "mechanism_described": true
+    },
+    {
+      "nct_id": "NCT06524544",
+      "sponsor": "National Cancer Institute (NCI)",
+      "phase": "Phase 3",
+      "interventions": [
+        "Pembrolizumab",
+        "Sacituzumab Govitecan",
+        "Cisplatin",
+        "Carboplatin",
+        "Gemcitabine",
+        "Docetaxel",
+        "Paclitaxel"
+      ],
+      "mechanism_or_findings": "Sacituzumab govitecan-hziy is a monoclonal antibody linked to chemotherapy govitecan-hziy that attaches to TROP2-positive tumor cells to deliver the payload; pembrolizumab is described as immunotherapy helping the immune system attack cancer. Compared against platinum/taxane standard of care in locally advanced or metastatic urothelial carcinoma.",
+      "mechanism_described": true
+    },
+    {
+      "nct_id": "NCT04267848",
+      "sponsor": "National Cancer Institute (NCI)",
+      "phase": "Phase 3",
+      "interventions": [
+        "Pembrolizumab",
+        "Cisplatin",
+        "Carboplatin",
+        "Pemetrexed Disodium",
+        "Gemcitabine Hydrochloride",
+        "Paclitaxel"
+      ],
+      "mechanism_or_findings": "ALCHEMIST ACCIO adds pembrolizumab, described as a monoclonal antibody immunotherapy that may help the immune system attack cancer, to usual chemotherapy in resected stage IIA-IIIB NSCLC.",
+      "mechanism_described": true
+    },
+    {
+      "nct_id": "NCT07195695",
+      "sponsor": "Boehringer Ingelheim",
+      "phase": "Phase 3",
+      "interventions": [
+        "Zongertinib",
+        "Pembrolizumab",
+        "Atezolizumab",
+        "Durvalumab",
+        "Nivolumab"
+      ],
+      "mechanism_or_findings": "Beamion LUNG-3 evaluates zongertinib, described as an oral HER2-targeted treatment, versus standard adjuvant treatment (approved immunotherapy or surveillance) in completely resected stage II-IIIB NSCLC with activating HER2 tyrosine kinase domain mutations; primary endpoint is disease-free survival.",
+      "mechanism_described": true
+    },
+    {
+      "nct_id": "NCT07391774",
+      "sponsor": "National Cancer Institute (NCI)",
+      "phase": "Phase 3",
+      "interventions": [
+        "Ribociclib Succinate",
+        "Anastrozole",
+        "Letrozole",
+        "Exemestane",
+        "Chemotherapy"
+      ],
+      "mechanism_or_findings": "RxFINE-Low compares hormone therapy plus ribociclib to chemotherapy followed by hormone therapy plus ribociclib in ER+/HER2- high anatomic stage breast cancer with low recurrence risk. Ribociclib is described as stopping tumor cell growth by blocking enzymes needed for cell growth; aromatase inhibitors lower estrogen.",
+      "mechanism_described": true
+    },
+    {
+      "nct_id": "NCT06016738",
+      "sponsor": "Olema Pharmaceuticals, Inc.",
+      "phase": "Phase 3",
+      "interventions": [
+        "Palazestrant",
+        "Fulvestrant",
+        "Anastrozole",
+        "Letrozole",
+        "Exemestane"
+      ],
+      "mechanism_or_findings": "Compares palazestrant (OP-1250) with standard-of-care fulvestrant or an aromatase inhibitor in ER+/HER2- advanced breast cancer that progressed on one endocrine therapy combined with a CDK4/6 inhibitor. The record does not state palazestrant's molecular target or modality.",
+      "mechanism_described": false
+    },
+    {
+      "nct_id": "NCT06956001",
+      "sponsor": "Allist Pharmaceuticals, Inc.",
+      "phase": "Phase 3",
+      "interventions": [
+        "Firmonertinib Mesilate Tablets",
+        "Pemetrexed Disodium for Injection",
+        "Cisplatin for injection",
+        "Carboplatin Injection"
+      ],
+      "mechanism_or_findings": "Randomized open-label study of firmonertinib mesylate (240 mg oral daily) versus platinum doublet chemotherapy in ~300 treatment-naive patients with locally advanced or metastatic NSCLC carrying EGFR PACC or EGFR L861Q mutations, stratified by mutation type and CNS metastasis. The record identifies the biomarker-selected population but does not state the drug's mechanism of action.",
+      "mechanism_described": false
+    },
+    {
+      "nct_id": "NCT07678229",
+      "sponsor": "Rong Tao",
+      "phase": "Phase 3",
+      "interventions": [
+        "GELAD regimen",
+        "MEDA regimen",
+        "LEAP regimen",
+        "High-dose methotrexate"
+      ],
+      "mechanism_or_findings": "BRIDGE-NK randomizes newly diagnosed stage IV extranodal NK/T-cell lymphoma 1:1 to GELAD induction followed by MEDA chemotherapy versus four cycles of LEAP induction (sintilimab, pegaspargase, anlotinib), each followed by autologous HSCT consolidation in strict complete remission; primary endpoint is 24-month event-free survival. Mechanisms of the component agents are not described.",
+      "mechanism_described": false
+    }
+  ]
+}

@@ -1,0 +1,74 @@
+# Daily Delta ETL -- fetch_daily_updates.py, run as a scheduled ECS Fargate
+# task (see terraform/main.tf's aws_ecs_task_definition.daily_delta_job and
+# its EventBridge cron trigger), not a long-running service.
+#
+# python:3.11-slim, not python:3.10-slim like Dockerfile.backend, and
+# DELIBERATELY not a two-stage build (main pipeline env + a nested
+# .venv-kg): build_kg.py's own module docstring explains .venv-kg only
+# exists locally because the MAIN project venv is pinned to Python 3.14,
+# which scispacy's dependency chain (nmslib-metabrainz specifically) has no
+# wheels for. A container whose ONLY interpreter is already 3.11 never hits
+# that problem -- scispacy installs directly into the same environment as
+# everything else here, no nested venv needed. fetch_daily_updates.py's own
+# _resolve_kg_python() falls back to `sys.executable` for exactly this case
+# (see its module docstring).
+#
+# VERIFIED before writing this, not assumed: fetched nmslib-metabrainz==2.1.3's
+# real manylinux2014_x86_64 cp311 wheel and inspected it directly
+# (objdump -p) -- it vendors its OWN copy of libgomp
+# (nmslib_metabrainz.libs/libgomp-*.so, a standard `auditwheel repair`
+# output), so unlike Dockerfile.backend's onnxruntime/FastEmbed wheel (which
+# genuinely needed the system libgomp1 package), NO extra apt package is
+# needed here for OpenMP support.
+FROM python:3.11-slim
+
+WORKDIR /app
+
+COPY requirements-etl.txt .
+RUN pip install --no-cache-dir -r requirements-etl.txt
+
+# en_core_sci_sm (scispacy's RxNorm NER model) is NOT on PyPI -- installed
+# from its S3 tarball directly, matching build_kg.py's own documented
+# bootstrap command exactly (see that file's module docstring).
+RUN pip install --no-cache-dir \
+    https://s3-us-west-2.amazonaws.com/ai2-s2-scispacy/releases/v0.5.4/en_core_sci_sm-0.5.4.tar.gz
+
+# Pre-warm the scispacy RxNorm linker's knowledge-base cache (tf-idf
+# vectors, nmslib index, concept aliases, the RxNorm KB itself -- ~55MB
+# total) INTO THE IMAGE at build time. VERIFIED directly (ran this exact
+# import+pipe-add sequence in a first-cut build of this image): without
+# this, that ~55MB downloads from S3 on EVERY container start, since a
+# fresh Fargate task has no persistent local disk across runs -- for a
+# task that runs fresh once a day via EventBridge, that is a real,
+# recurring cost/latency hit for data that never changes, not a one-time
+# warm-up. Baking it in cuts a cold load from a full ~55MB download down
+# to ~6s (verified: cache hit, only a small HTTP HEAD freshness check per
+# file, no re-download) -- scispacy's file cache always does that HEAD
+# check regardless, so this still needs SOME network reachability at
+# runtime (which the Fargate task has, via the NAT gateway egress this
+# stack's ecs_tasks security group already allows), just not a repeat of
+# the full download.
+RUN python -c "\
+import spacy; \
+from scispacy.linking import EntityLinker; \
+nlp = spacy.load('en_core_sci_sm'); \
+nlp.add_pipe('scispacy_linker', config={'resolve_abbreviations': True, 'linker_name': 'rxnorm'})"
+
+# --- Qdrant / Neo4j connectivity ---------------------------------------------
+# "localhost" is correct for bare-metal dev; overridden in
+# terraform/main.tf's task definition to the Cloud Map service names, same
+# pattern as the backend task.
+ENV QDRANT_HOST=localhost
+ENV QDRANT_PORT=6333
+ENV NEO4J_URI=bolt://localhost:7687
+ENV NEO4J_USER=neo4j
+
+# Only what fetch_daily_updates.py's own import chain touches: itself, the
+# two modules it imports helpers from (which pulls in their own top-level
+# imports too), the shared embedding client, and build_kg.py for entity
+# resolution. Not api.py/research_agent.py/parse_pdfs.py/ingest_pipeline.py
+# -- this image never runs the live agent or PDF ingestion, same "only what's
+# actually imported" discipline as Dockerfile.backend.
+COPY embeddings.py fetch_and_embed_trials.py seed_bulk_data.py fetch_daily_updates.py build_kg.py ./
+
+CMD ["python", "fetch_daily_updates.py"]

@@ -1,0 +1,65 @@
+# secrets
+.env
+*.pem
+
+# python
+.venv/
+# .venv-kg (build_kg.py's isolated scispacy/spacy env, see that module's
+# docstring) was missing here entirely until verified directly against
+# `du -sh` before this repo's first commit -- 356MB of compiled
+# native/binary packages that were about to be staged wholesale.
+.venv-kg/
+__pycache__/
+*.py[cod]
+*.egg-info/
+
+# raw data snapshots (S3 is the system of record) -- **/*.json, not just
+# the top-level *.json: verified directly (find data/raw -mindepth 2) that
+# fetch_daily_updates.py's own bulk_seed/ and daily_delta/ subdirectories
+# were NOT covered by the single-level glob this replaces, so real archived
+# payloads were slipping through it. Also *.json.zip and *.md: caught by a
+# `git add -A -n` dry-run before this repo's first commit actually staging
+# an openFDA bulk_seed .json.zip archive and ingest_pipeline.py's parsed
+# PDF .md output, neither of which the plain *.json pattern matches.
+data/raw/**/*.json
+data/raw/**/*.json.zip
+data/raw/**/*.md
+
+# transient run artifacts from this session's background seed/delta jobs
+# (log + pid files from seed_bulk_data.py invocations) -- caught by the
+# same pre-commit dry-run; operational output, not project source.
+seed_*.log
+seed_*.pid
+
+# node / Next.js
+frontend/node_modules/
+frontend/.next/
+
+# local database volumes -- bind-mounted Docker storage for Qdrant/Neo4j.
+# Verified sizes before adding this (`du -sh`): qdrant_storage/ 4.8GB,
+# neo4j_data/ 1.5GB at last check, growing with every bulk-seed run.
+# Entirely reproducible from S3 + the seed/delta scripts; never meant to be
+# version-controlled, and neither was covered here before this repo's
+# first commit.
+qdrant_storage/
+neo4j_data/
+
+# os
+.DS_Store
+
+# local Claude Code session state (not project source)
+.claude/
+
+# terraform (state and .tfvars can both hold secret values / account details)
+# .terraform.lock.hcl is deliberately NOT ignored -- it pins provider
+# versions and should be committed, same as a package-lock.json.
+terraform/.terraform/
+terraform/*.tfstate
+terraform/*.tfstate.*
+terraform/*.tfvars
+terraform/crash.log
+
+# pre-migration state backups (see .state-backups/ -- local safety copies
+# made before `terraform init -migrate-state`, same reasoning as the
+# terraform.tfstate* rules above: can hold real infrastructure details)
+.state-backups/

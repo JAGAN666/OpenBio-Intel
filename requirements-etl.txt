@@ -1,0 +1,47 @@
+# medical-rag :: Daily Delta ETL image (Dockerfile.etl) -- fetch_daily_updates.py
+# + build_kg.py, in ONE Python 3.11 environment.
+#
+# Scoped to exactly what fetch_daily_updates.py's own import chain touches
+# (including seed_bulk_data.py's and fetch_and_embed_trials.py's top-level
+# imports, pulled in transitively when this script imports helpers from
+# them) plus build_kg.py's entity-resolution deps -- NOT the full
+# requirements.txt, which also installs fastapi/uvicorn/langgraph/
+# langchain-anthropic/llama-parse/ragas/etc. that this batch job never uses.
+# Same "only what's actually imported" discipline Dockerfile.backend already
+# applies to api.py/research_agent.py.
+
+# --- ETL core (fetch_daily_updates.py / fetch_and_embed_trials.py / seed_bulk_data.py)
+requests>=2.32.0
+boto3>=1.34.0
+python-dotenv>=1.0.1
+qdrant-client==1.18.0   # matches the main requirements.txt pin -- see that
+                        # file's comment; no [fastembed] extra needed here either
+ijson>=3.2.0            # seed_bulk_data.py's top-level import (openFDA bulk
+                        # streaming) -- pulled in transitively even though
+                        # this delta script's own openFDA path never calls it,
+                        # since `from seed_bulk_data import ...` executes that
+                        # module's top-level imports regardless
+
+# --- embedding engine (embeddings.py) ----------------------------------------
+langchain-openai>=0.3.0
+openai>=1.0.0
+tenacity>=8.0.0
+
+# --- entity resolution (build_kg.py) -----------------------------------------
+# Exact versions matching .venv-kg's proven-working local setup (see
+# build_kg.py's own module docstring for why this needs spacy<3.8) -- pinned
+# here, not floated, since this is the one dependency chain in this whole
+# project verified to be this version-sensitive.
+spacy==3.7.5
+scispacy==0.6.2
+neo4j==6.2.0
+# click is a real spacy runtime dependency (spacy.cli imports it directly at
+# `import spacy` time, not just for its own CLI entry point) but is not
+# always pulled in transitively by a fresh resolver run -- verified by
+# diffing this exact failure against .venv-kg's known-working installed set
+# (which has click==8.4.2 present). Pinned explicitly rather than left to
+# chance.
+click==8.4.2
+# en_core_sci_sm (the RxNorm NER model) is NOT on PyPI -- installed from its
+# S3 tarball directly in Dockerfile.etl, matching build_kg.py's own
+# documented bootstrap command.

@@ -1,0 +1,41 @@
+# FastAPI backend -- research_agent.py's LangGraph agent behind api.py.
+#
+# Single, carefully-ordered stage rather than a build+runtime split: every
+# dependency here (fastapi, qdrant-client, langchain-anthropic, langchain-openai)
+# ships prebuilt manylinux/musllinux wheels for both amd64 and arm64, so
+# there is no compiler step to isolate away from the final image.
+# "Optimized" here means correct layer ordering (deps before source, so
+# editing api.py doesn't invalidate the pip-install layer) and
+# --no-cache-dir, not a multi-stage split with nothing to build.
+#
+# NOTE (post-OpenAI-embedding-migration cleanup): this image previously
+# installed libgomp1 and set up a FastEmbed model cache directory -- both
+# were FastEmbed/onnxruntime-specific and neither is used anymore now that
+# embedding goes through embeddings.py's OpenAI client instead (see that
+# module's own docstring). Removed entirely, not just left inert.
+FROM python:3.10-slim
+
+WORKDIR /app
+
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+# --- Qdrant / Neo4j connectivity ----------------------------------------------
+# "localhost" is correct for bare-metal dev but wrong inside a Compose
+# network -- overridden to the qdrant/neo4j service names in
+# docker-compose.yml (and to the Cloud Map DNS names in terraform/main.tf's
+# Fargate task definition).
+ENV QDRANT_HOST=localhost
+ENV QDRANT_PORT=6333
+
+# Only what api.py's own import chain actually touches at runtime -- not the
+# ETL scripts, eval pipeline, or frontend. embeddings.py and auth.py are
+# REQUIRED additions here, not extras: research_agent.py imports embed_query
+# from embeddings.py, and api.py imports get_current_user/CurrentUser from
+# auth.py directly, so without either this image fails at import time,
+# before uvicorn even starts.
+COPY api.py research_agent.py embeddings.py auth.py ./
+
+EXPOSE 8000
+
+CMD ["uvicorn", "api:app", "--host", "0.0.0.0", "--port", "8000"]

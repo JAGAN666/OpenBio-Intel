@@ -1,0 +1,139 @@
+# medical-rag full stack: qdrant -> backend (FastAPI/LangGraph) -> frontend (Next.js)
+#
+#   docker compose up --build -d
+#   docker compose ps
+#   docker compose logs -f backend
+#   docker compose down            # stop (keeps ./qdrant_storage data)
+
+services:
+  qdrant:
+    image: qdrant/qdrant:latest
+    ports:
+      - "127.0.0.1:6333:6333"   # REST -- what qdrant-client / this app uses
+      - "127.0.0.1:6334:6334"   # gRPC -- unused by this app, published for parity with local dev
+    volumes:
+      - ./qdrant_storage:/qdrant/storage
+    healthcheck:
+      # The qdrant/qdrant image is Debian-slim with neither curl nor wget
+      # (verified: `docker exec ... which curl wget` returns nothing) -- a
+      # literal `curl http://localhost:6333/healthz` healthcheck command
+      # would fail immediately with "executable file not found", not report
+      # unhealthy for a real reason. bash IS present, so this issues a raw
+      # HTTP GET over its /dev/tcp pseudo-device instead and checks for a
+      # 200 status line. Verified directly against a running container
+      # before writing this (200 OK -> exit 0; closed port -> exit 1).
+      test: ["CMD", "bash", "-c", "exec 3<>/dev/tcp/127.0.0.1/6333 && printf 'GET /healthz HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n' >&3 && head -1 <&3 | grep -q '200 OK'"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+
+  neo4j:
+    image: neo4j:5
+    ports:
+      - "127.0.0.1:7474:7474"   # HTTP -- browser UI / REST
+      - "127.0.0.1:7687:7687"   # Bolt -- what build_kg.py / research_agent.py use
+    environment:
+      NEO4J_AUTH: neo4j/password
+    volumes:
+      - ./neo4j_data:/data
+    healthcheck:
+      # Verified directly which tools this image ships (`docker run --rm
+      # neo4j:5 which curl wget bash cypher-shell`): no curl, but wget, bash,
+      # AND cypher-shell (Neo4j's own CLI) are all present. cypher-shell is
+      # used deliberately over a bare port/HTTP check -- it proves the
+      # database is actually accepting AUTHENTICATED Cypher queries, not
+      # just that a TCP port is open (the same "verify it actually works,
+      # not just that it responds" standard the qdrant healthcheck used).
+      test: ["CMD", "cypher-shell", "-u", "neo4j", "-p", "password", "RETURN 1"]
+      interval: 10s
+      timeout: 10s
+      retries: 10
+      start_period: 30s   # neo4j's first boot (index/db init) is slower than qdrant's
+
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile.backend
+    ports:
+      # Bound to 127.0.0.1, not the bare "8000:8000" the spec's port line
+      # implies. On this host, an unrelated pre-existing process
+      # (`python -m http.server 8000`) already holds the IPv6 wildcard on
+      # port 8000 -- Docker Desktop publishing to both 0.0.0.0 and [::]
+      # would either fail to bind or, worse, silently coexist with traffic
+      # occasionally hitting the wrong process. Pinning to 127.0.0.1
+      # sidesteps the conflict entirely and is also a better security
+      # default (not exposed to the LAN) for a local Compose stack.
+      - "127.0.0.1:8000:8000"
+    env_file:
+      - .env
+    environment:
+      # Overrides Dockerfile.backend's ENV QDRANT_HOST=localhost default.
+      # Inside the Compose network, "localhost" from the backend container
+      # means the backend container itself -- Compose's embedded DNS
+      # resolves the service name "qdrant" to the qdrant container's address.
+      QDRANT_HOST: qdrant
+      QDRANT_PORT: "6333"
+      # Same "localhost" trap as QDRANT_HOST above -- overrides
+      # research_agent.py's bare-metal default of bolt://localhost:7687 to
+      # reach the neo4j service by its Compose DNS name instead.
+      NEO4J_URI: bolt://neo4j:7687
+    volumes:
+      # FastEmbed cache ONLY. NOT ./qdrant_storage: the spec's Section 2
+      # suggests mounting it into the backend too, but that directory is
+      # Qdrant's own on-disk storage FORMAT, read by the qdrant process
+      # directly -- the backend never touches it, reaching Qdrant purely
+      # over the network (QDRANT_HOST above). Mounting it into a second,
+      # unrelated container would do nothing useful and risks confusion
+      # about which process owns that data; omitted deliberately.
+      - fastembed_cache:/root/.cache/fastembed
+    depends_on:
+      qdrant:
+        condition: service_healthy
+      neo4j:
+        condition: service_healthy
+    healthcheck:
+      # python:3.10-slim has no curl either, but it has Python -- use it.
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/api/health', timeout=3)"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+
+  frontend:
+    build:
+      context: ./frontend
+      args:
+        # NEXT_PUBLIC_API_URL is consumed by BROWSER-side JavaScript, not
+        # container-to-container traffic -- the browser runs on the host and
+        # reaches the backend through the published port mapping above. It
+        # MUST arrive as a build arg (see frontend/Dockerfile) -- Next.js
+        # inlines NEXT_PUBLIC_* into the client bundle at `next build` time;
+        # setting it under this service's `environment:` instead would
+        # compile a working server but ship a browser bundle that still
+        # points at whatever (or nothing) was baked in at build time.
+        #
+        # 127.0.0.1, NOT "localhost" (deliberately deviating from the literal
+        # spec value here): on this host, `curl/fetch http://localhost:8000`
+        # resolves to ::1 first and reaches an unrelated pre-existing process
+        # squatting the IPv6 wildcard on :8000 (confirmed directly -- it
+        # returns its own 404/501, not our API), while the backend's
+        # published port is bound to 127.0.0.1 only. The page would still
+        # load fine either way (AC 4's literal check), but every in-page
+        # "Run Analysis" fetch would silently hit the wrong server. Same root
+        # cause already fixed once in frontend/app/page.tsx's local-dev
+        # default; this repeats that fix at the container-build boundary.
+        NEXT_PUBLIC_API_URL: http://127.0.0.1:8000
+    ports:
+      - "3000:3000"
+    depends_on:
+      - backend
+    healthcheck:
+      test: ["CMD", "node", "-e", "require('http').get('http://localhost:3000', r => process.exit(r.statusCode === 200 ? 0 : 1)).on('error', () => process.exit(1))"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+volumes:
+  fastembed_cache:
