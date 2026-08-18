@@ -135,5 +135,41 @@ services:
       retries: 5
       start_period: 10s
 
+  # One-off ingestion job, not a persistent service -- profiles: [seed] keeps
+  # it out of a plain `docker compose up -d`. Invoked explicitly by
+  # quickstart.sh via `docker compose --profile seed run --rm seed ...` with
+  # a specific seed_bulk_data.py command, overriding this image's own
+  # default CMD (fetch_daily_updates.py, meant for the scheduled AWS delta
+  # job -- see Dockerfile.etl). Reuses Dockerfile.etl rather than adding a
+  # second, lighter-weight image: the only real cost of that is scispacy/
+  # RxNorm getting compiled into the image on the first build even though a
+  # --skip-neo4j quickstart seed never uses it -- a one-time build-time
+  # cost (cached afterward), not worth maintaining two ETL Dockerfiles to
+  # avoid.
+  seed:
+    build:
+      context: .
+      dockerfile: Dockerfile.etl
+    # platform: linux/amd64 -- verified live (Apple Silicon host): without
+    # this, Docker builds for linux/arm64 natively, and nmslib-metabrainz
+    # (scispacy's RxNorm linker dependency) has no arm64 wheel on PyPI, so
+    # pip falls back to compiling it from source -- which then fails
+    # outright, since python:3.11-slim ships no C++ compiler ("Unsupported
+    # compiler -- at least C++11 support is needed!"). Forcing amd64 makes
+    # Docker Desktop transparently emulate via Rosetta 2 on Apple Silicon,
+    # which DOES resolve a real prebuilt manylinux wheel -- slower than a
+    # native build, but it actually completes, which the native arm64 path
+    # does not at all.
+    platform: linux/amd64
+    profiles: ["seed"]
+    env_file:
+      - .env
+    environment:
+      QDRANT_HOST: qdrant
+      QDRANT_PORT: "6333"
+    depends_on:
+      qdrant:
+        condition: service_healthy
+
 volumes:
   fastembed_cache:

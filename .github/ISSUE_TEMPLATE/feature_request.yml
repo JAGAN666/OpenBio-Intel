@@ -1,0 +1,35 @@
+name: Feature request
+description: Suggest a new data source, agent capability, or UI feature.
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: What problem does this solve?
+      description: What can't you do today that this would let you do? A real question this project currently answers badly (or can't answer at all) is the most useful framing.
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed approach
+      description: |
+        If this is a new data source: what's the source, is there a free/public API, what would the retrieval tool look like, and does it overlap with an existing collection (clinical_trials, sec_filings, pubmed_literature, corporate_news, openfda_drugsfda, clinical_trials_pdf_extracts)?
+        If this is a UI feature: which page, and what does the interaction look like?
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: Is there already a way to do this with an existing tool/page, just not conveniently?
+
+  - type: checkboxes
+    id: contribute
+    attributes:
+      label: Are you willing to open a PR for this?
+      options:
+        - label: Yes, I'd like to work on this myself
+        - label: No, but I'd be happy to test/review a PR
