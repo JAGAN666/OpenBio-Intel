@@ -1,6 +1,6 @@
 <div align="center">
 
-# medical-rag
+# OpenBio-Intel
 
 **The open-source AI intelligence platform for clinical trials, regulatory approvals, and biopharma landscape analysis.**
 
@@ -24,7 +24,7 @@ Ask a question like *"Compare the mechanisms and sponsors of Phase 3 oncology tr
 
 Commercial biopharma intelligence platforms (Cortellis, AlphaSense, and similar tools like Maven Bio) solve a real problem — but as closed, subscription-gated SaaS products, they're opaque about methodology, expensive to access, and impossible to self-host, extend, or audit.
 
-| | medical-rag | Typical commercial platforms |
+| | OpenBio-Intel | Typical commercial platforms |
 |---|---|---|
 | **License** | Open source (MIT) | Proprietary |
 | **Self-hostable** | Yes — Docker Compose or your own cloud | No — SaaS only |
@@ -117,8 +117,8 @@ flowchart TB
 Requires [Docker](https://docs.docker.com/get-docker/) and Docker Compose, plus an [OpenAI API key](https://platform.openai.com/api-keys) (embeddings — required) and an [Anthropic API key](https://console.anthropic.com/) (agent orchestration — required unless you switch `LLM_PROVIDER`).
 
 ```bash
-git clone https://github.com/JAGAN666/medical-rag.git
-cd medical-rag
+git clone https://github.com/JAGAN666/OpenBio-Intel.git
+cd OpenBio-Intel
 ./quickstart.sh
 ```
 
@@ -184,6 +184,12 @@ cd frontend && npm install && npm run dev
 ## Contributing
 
 Contributions are welcome — see [CONTRIBUTING.md](CONTRIBUTING.md) for development setup, testing expectations, and PR guidelines. Bug reports and feature requests: use the [issue templates](.github/ISSUE_TEMPLATE/).
+
+## Contributors
+
+- **Jagan** ([@JAGAN666](https://github.com/JAGAN666)) — creator & maintainer
+
+Want to see your name here? Open a PR — see [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## License
 
