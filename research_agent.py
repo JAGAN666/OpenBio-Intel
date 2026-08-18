@@ -571,10 +571,20 @@ _qdrant: QdrantClient | None = None
 def _client() -> QdrantClient:
     """Lazy singleton -- a plain client now; embedding happens explicitly via
     embeddings.embed_query() before each search, not via a bound FastEmbed
-    model."""
+    model.
+
+    timeout=30, not the default (None, which falls through to httpx's own
+    ~5s default) -- verified live against the AWS deployment: a payload-
+    filtered query (e.g. catalyst retrieval's phase_filter) against the
+    597K-point clinical_trials collection can genuinely take several
+    seconds longer than that, and a real "timed out" 502 was reproduced
+    end-to-end this way even though the query itself was actively
+    succeeding server-side (confirmed via Qdrant's own access log), just
+    not within httpx's default window.
+    """
     global _qdrant
     if _qdrant is None:
-        _qdrant = QdrantClient(host=QDRANT_HOST, port=QDRANT_PORT)
+        _qdrant = QdrantClient(host=QDRANT_HOST, port=QDRANT_PORT, timeout=30)
     return _qdrant
 
 
