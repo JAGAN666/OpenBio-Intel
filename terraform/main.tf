@@ -245,14 +245,32 @@ resource "aws_lb" "main" {
   security_groups    = [aws_security_group.alb.id]
   subnets            = aws_subnet.public[*].id
 
-  # AWS default is 60s. Bumped: this app's research queries run a
-  # multi-tool-call LangGraph agent (intent classification, tool calls,
-  # parallel Map-Reduce extraction workers, a synthesis LLM call) that has
-  # taken 60-90+ seconds for non-trivial questions throughout this
-  # project's own local testing -- well past the default, and confirmed
-  # live: the very first production query hit exactly this ceiling and
-  # came back as a 502 from the ALB, not an application error.
-  idle_timeout = 120
+  # AWS default is 60s. First bumped to 120s: this app's multi-tool-call
+  # LangGraph agent (intent classification, tool calls, parallel
+  # Map-Reduce extraction workers, a synthesis LLM call) routinely takes
+  # 60-90+ seconds for non-trivial questions, and the very first
+  # production query hit the 60s default and came back as a 502, not an
+  # application error.
+  #
+  # Bumped again, to 900s, after the AWS Neo4j knowledge graph -- empty
+  # since the earlier Qdrant-only migration, populated for the first time
+  # in this change -- started returning real matches instead of 0 rows: a
+  # query pulling up to TRIAL_SEARCH_LIMIT/CATALYST_TRIAL_LIMIT (60) real
+  # trials through the gpt-4o Map-stage extractors, under this account's
+  # real 30,000 TPM rate limit (EXTRACTION_CONCURRENCY's adaptive
+  # retry-after backoff), now routinely runs well past 120s. Confirmed
+  # live across two intermediate steps (300s, then 360s) that both proved
+  # insufficient: two consecutive real pembrolizumab queries against the
+  # same account completed server-side in 306.6s and 624.2s respectively
+  # -- a 2x swing between back-to-back runs, driven by this account's real
+  # throttling varying with whatever else is hitting it at the time, not
+  # by anything this app controls. The backend itself always finished
+  # successfully in both cases (54 rows, then 104 rows); only the ALB gave
+  # up early. If a query ever needs longer than this 900s ceiling, that's
+  # a sign this synchronous-request-per-query architecture itself needs to
+  # change (e.g. an async job + polling pattern), not that the timeout
+  # needs another bump.
+  idle_timeout = 900
 
   tags = { Name = "${local.name}-alb" }
 }

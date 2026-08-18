@@ -50,6 +50,12 @@ frontend/.next/
 qdrant_storage/
 neo4j_data/
 
+# scratch output of migrate_snapshot.py-style one-off migrations (offline
+# neo4j-admin dump used to seed AWS's Neo4j -- see terraform/main.tf's
+# aws_lb.main idle_timeout comment for that migration's context). ~230MB,
+# never meant to be version-controlled; the real copy lives in S3.
+neo4j_dumps/
+
 # os
 .DS_Store
 
