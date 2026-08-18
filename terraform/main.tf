@@ -530,6 +530,7 @@ data "aws_iam_policy_document" "ecs_secrets_access" {
       aws_secretsmanager_secret.neo4j_auth.arn,
       aws_secretsmanager_secret.openai_api_key.arn,
       aws_secretsmanager_secret.jwt_secret_key.arn,
+      aws_secretsmanager_secret.kimi_api_key.arn,
     ]
   }
 }
@@ -615,6 +616,16 @@ resource "aws_secretsmanager_secret" "jwt_secret_key" {
 resource "aws_secretsmanager_secret_version" "jwt_secret_key" {
   secret_id     = aws_secretsmanager_secret.jwt_secret_key.id
   secret_string = var.jwt_secret_key
+}
+
+resource "aws_secretsmanager_secret" "kimi_api_key" {
+  name                    = "${local.name}/kimi-api-key"
+  recovery_window_in_days = 0
+}
+
+resource "aws_secretsmanager_secret_version" "kimi_api_key" {
+  secret_id     = aws_secretsmanager_secret.kimi_api_key.id
+  secret_string = var.kimi_api_key
 }
 
 # =============================================================================
@@ -910,10 +921,22 @@ resource "aws_ecs_task_definition" "backend" {
         # fallback, so a future change to that default can't silently drift
         # from what this deployment actually signs/verifies with.
         { name = "JWT_ALGORITHM", value = var.jwt_algorithm },
+        # Not sensitive (a provider name -- "anthropic"/"kimi"/"nvidia"),
+        # so a plain environment entry, same reasoning as JWT_ALGORITHM
+        # above. See var.llm_provider's own comment for what this
+        # controls and what it deliberately does NOT control (the
+        # gpt-4o-pinned extraction stage ignores this and always uses
+        # OPENAI_API_KEY).
+        { name = "LLM_PROVIDER", value = var.llm_provider },
       ]
       secrets = [
         { name = "ANTHROPIC_API_KEY", valueFrom = aws_secretsmanager_secret.anthropic_api_key.arn },
         { name = "NEO4J_PASSWORD", valueFrom = aws_secretsmanager_secret.neo4j_password.arn },
+        # Only actually read by build_llm() when LLM_PROVIDER=kimi -- wired
+        # in unconditionally (like every other secret here) rather than
+        # made conditional on var.llm_provider, so switching providers
+        # later is a plain var change, not a resource add/remove.
+        { name = "KIMI_API_KEY", valueFrom = aws_secretsmanager_secret.kimi_api_key.arn },
         # Previously missing entirely -- see var.openai_api_key's own
         # comment. research_agent.py's search tools call embeddings.py's
         # embed_query() on every request; without this, every search on a

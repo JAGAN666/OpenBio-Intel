@@ -237,7 +237,9 @@ jobs:
             -var="anthropic_api_key=${{ secrets.ANTHROPIC_API_KEY }}" \
             -var="openai_api_key=${{ secrets.OPENAI_API_KEY }}" \
             -var="jwt_secret_key=${{ secrets.JWT_SECRET_KEY }}" \
-            -var="neo4j_password=${{ secrets.NEO4J_PASSWORD }}"
+            -var="neo4j_password=${{ secrets.NEO4J_PASSWORD }}" \
+            -var="kimi_api_key=${{ secrets.KIMI_API_KEY }}" \
+            -var="llm_provider=kimi"
 
       - name: Terraform Apply
         run: terraform apply -auto-approve tfplan

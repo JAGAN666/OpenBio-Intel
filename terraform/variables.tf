@@ -224,6 +224,27 @@ variable "jwt_algorithm" {
   default     = "HS256"
 }
 
+# research_agent.py's build_llm() routes agent orchestration/routing calls
+# (tool-calling, intent classification, narrative synthesis) to whichever
+# provider LLM_PROVIDER names -- "anthropic" (default, uses
+# anthropic_api_key), "kimi", or "nvidia". The gpt-4o-pinned structured-
+# extraction stage (Smart Table's Map workers, Landscape, Catalyst) always
+# uses openai_api_key regardless of this setting -- see
+# _build_gpt4o_llm's own docstring for why that stage specifically can't
+# use a reasoning model or a low-concurrency-quota provider.
+variable "llm_provider" {
+  description = "Which LLM provider handles agent orchestration/routing: anthropic, kimi, or nvidia."
+  type        = string
+  default     = "anthropic"
+}
+
+variable "kimi_api_key" {
+  description = "Moonshot (Kimi) API key for research_agent.py's build_llm() when llm_provider=kimi."
+  type        = string
+  sensitive   = true
+  default     = ""
+}
+
 # --- service scaling -----------------------------------------------------------
 # All default to 1. Qdrant/Neo4j CANNOT scale beyond 1 -- both are
 # single-writer databases backed by one EFS volume, so a second task would
