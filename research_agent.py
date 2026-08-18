@@ -82,6 +82,7 @@ import sys
 import textwrap
 import threading
 import time
+from datetime import date, datetime
 from pathlib import Path
 from typing import Annotated, Any, Optional, TypedDict
 
@@ -3202,15 +3203,45 @@ def _retrieve_catalyst_evidence(query: str) -> dict:
         })
 
     date_lookup = _enrich_trial_dates([t["NCTId"] for t in trials])
+    today = date.today()
     dated_trials = []
+    dropped_past = 0
     for t in trials:
         d = date_lookup.get(t["NCTId"])
-        if not d or not (d.get("primaryCompletionDate") or d.get("completionDate")):
+        raw_date = d.get("primaryCompletionDate") or d.get("completionDate") if d else None
+        if not raw_date:
+            continue
+        # Filtering already-past trials HERE, not just at final synthesis
+        # (_finalize_catalyst_timeline has its own backstop for whatever
+        # slips through) -- verified live that leaving this only as a
+        # downstream check let a whole CATALYST_TRIAL_LIMIT-sized candidate
+        # pool skew toward trials that are administratively still "active"
+        # in the registry (see _UPCOMING_TRIAL_STATUSES) but already past
+        # their own stated completion date, starving the LLM of genuinely
+        # upcoming candidates to choose from and occasionally returning
+        # zero events on an otherwise-reasonable query. Best-effort parse:
+        # an unparseable date is dropped here too -- this feature can't
+        # honestly place an unparseable date on a timeline either way.
+        try:
+            from dateutil import parser as _dateutil_parser
+            # default= needs a real datetime, not a date -- verified live:
+            # passing `today` (a date) directly makes dateutil return a
+            # date-typed result instead of a datetime, and .date() on THAT
+            # raises AttributeError ('date' object has no attribute
+            # 'date'). datetime.combine gives it what it actually wants.
+            parsed_date = _dateutil_parser.parse(
+                raw_date, default=datetime.combine(today, datetime.min.time())
+            ).date()
+        except (ValueError, OverflowError):
+            continue
+        if parsed_date < today:
+            dropped_past += 1
             continue
         t.update(d)
         dated_trials.append(t)
     print(f"[catalysts] {len(trials)} trials retrieved, {len(dated_trials)} have a "
-          f"real live-looked-up completion date")
+          f"real live-looked-up completion date that hasn't passed yet "
+          f"({dropped_past} dropped as already past)")
 
     sec_hits = _client().query_points(
         collection_name=COLLECTION_NAME_SEC, query=query_vector, limit=CATALYST_SEC_LIMIT
@@ -3288,35 +3319,73 @@ class CatalystState(TypedDict):
     error: Optional[str]
 
 
+# Shared by _finalize_catalyst_timeline's sort AND its past-event filter --
+# hoisted to module scope so both use the exact same quarter ordering
+# rather than two dicts that could quietly drift apart. "" (year-only,
+# no quarter cited) sorts before any real quarter within its year.
+_QUARTER_RANK = {"": 0, "H1": 1, "Q1": 1, "Q2": 2, "H2": 3, "Q3": 3, "Q4": 4}
+
+
 def _finalize_catalyst_timeline(query: str, draft: CatalystTimelineDraft) -> CatalystTimeline:
     """Runs _parse_catalyst_date over every drafted event, drops any whose
     raw_date genuinely can't be parsed (see that function's own docstring
-    for why that's the honest outcome rather than a guess), and sorts the
-    survivors chronologically. This is the code-side half of the
-    LLM-cites/code-computes split described in this section's module
-    comment."""
+    for why that's the honest outcome rather than a guess) OR whose parsed
+    date has already passed, and sorts the survivors chronologically. This
+    is the code-side half of the LLM-cites/code-computes split described in
+    this section's module comment.
+
+    The past-date drop is a real, verified-live fix, not defensive
+    padding: _UPCOMING_TRIAL_STATUSES only filters on a trial's
+    OverallStatus (RECRUITING etc.), which is NOT the same guarantee as
+    "hasn't happened yet" -- a trial can genuinely still be marked active
+    in the registry well past its own stated completion date (a real,
+    common ClinicalTrials.gov data-quality gap). Widening
+    CATALYST_TRIAL_LIMIT surfaced exactly this: a live "Upcoming Phase 3
+    readouts in Oncology" query returned a "January 2024" event -- already
+    two years in the past at query time. The synthesis prompt already
+    instructs the model to only cite genuinely upcoming events, but isn't
+    perfectly reliable at that judgment against a wider candidate pool;
+    this is the deterministic backstop.
+    """
+    today = date.today()
+    current_year = today.year
+    current_quarter_rank = _QUARTER_RANK[f"Q{(today.month - 1) // 3 + 1}"]
+
     events = []
-    dropped = 0
+    dropped_unparseable = 0
+    dropped_past = 0
     for draft_event in draft.events:
         parsed = _parse_catalyst_date(draft_event.raw_date)
         if parsed is None:
-            dropped += 1
+            dropped_unparseable += 1
             continue
         year, quarter, display = parsed
+        # A year-only citation (no quarter) in the CURRENT year is kept --
+        # there's no finer-grained signal to judge "already passed this
+        # year" from, and false-dropping a legitimate future event is worse
+        # than occasionally keeping one that's already happened within the
+        # same calendar year.
+        if year < current_year:
+            dropped_past += 1
+            continue
+        if year == current_year and quarter and _QUARTER_RANK.get(quarter, 99) < current_quarter_rank:
+            dropped_past += 1
+            continue
         events.append(CatalystEvent(
             display_date=display, year=year, quarter=quarter,
             company=draft_event.company, drug_name=draft_event.drug_name,
             event_type=draft_event.event_type, indication=draft_event.indication,
             source=draft_event.source, source_type=draft_event.source_type,
         ))
-    if dropped:
-        print(f"[catalysts] dropped {dropped} event(s) with an unparseable raw_date")
+    if dropped_unparseable:
+        print(f"[catalysts] dropped {dropped_unparseable} event(s) with an unparseable raw_date")
+    if dropped_past:
+        print(f"[catalysts] dropped {dropped_past} event(s) already in the past "
+              f"(not a genuine upcoming catalyst)")
 
-    # Sort by (year, quarter-as-a-number, "" sorts before any real quarter
-    # so year-only dates land first within their year) -- deterministic,
-    # not an LLM ordering claim.
-    _quarter_rank = {"": 0, "H1": 1, "Q1": 1, "Q2": 2, "H2": 3, "Q3": 3, "Q4": 4}
-    events.sort(key=lambda e: (e.year, _quarter_rank.get(e.quarter, 5)))
+    # Sort by (year, quarter-as-a-number) -- deterministic, not an LLM
+    # ordering claim.
+    events.sort(key=lambda e: (e.year, _QUARTER_RANK.get(e.quarter, 5)))
 
     return CatalystTimeline(query=query, events=events)
 
