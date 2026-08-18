@@ -1323,7 +1323,16 @@ data "aws_iam_policy_document" "github_actions_deploy" {
       "ec2:*",
       "ecs:*",
       "elasticloadbalancing:*",
-      "efs:*",
+      # NOT "efs:*" -- verified live (a real "AccessDeniedException ...
+      # elasticfilesystem:DescribeFileSystems" from Terraform Plan's own
+      # state refresh) that EFS's actual IAM action prefix is
+      # "elasticfilesystem:", not the resource-type-name-derived "efs:"
+      # this originally used. There is no IAM service actually registered
+      # under "efs", so that grant was silently doing nothing since this
+      # role was first created -- never surfaced until this pipeline's
+      # first real plan/apply had to refresh the EFS resources already in
+      # state.
+      "elasticfilesystem:*",
       "ecr:*",
       "secretsmanager:*",
       "logs:*",
@@ -1367,6 +1376,31 @@ data "aws_iam_policy_document" "github_actions_deploy" {
       variable = "iam:PassedToService"
       values   = ["ecs-tasks.amazonaws.com", "events.amazonaws.com"]
     }
+  }
+
+  # Also missing since this role was first created, also only surfaced by
+  # this same first real plan run: the IamForThisStacksRolesOnly statement
+  # above only covers arn:...:role/medical-rag-* -- this role's own
+  # aws_iam_openid_connect_provider.github_actions resource is a
+  # completely different ARN namespace (arn:...:oidc-provider/...), so it
+  # had zero permissions to read or manage the very OIDC trust
+  # relationship that lets it be assumed at all. Scoped to that one
+  # provider ARN, not iam:*OpenIDConnectProvider* generally.
+  statement {
+    sid    = "ManageThisStacksOwnOidcProvider"
+    effect = "Allow"
+    actions = [
+      "iam:GetOpenIDConnectProvider",
+      "iam:CreateOpenIDConnectProvider",
+      "iam:DeleteOpenIDConnectProvider",
+      "iam:UpdateOpenIDConnectProviderThumbprint",
+      "iam:TagOpenIDConnectProvider",
+      "iam:UntagOpenIDConnectProvider",
+      "iam:ListOpenIDConnectProviderTags",
+    ]
+    resources = [
+      "arn:aws:iam::${data.aws_caller_identity.current.account_id}:oidc-provider/token.actions.githubusercontent.com",
+    ]
   }
 
   # Missing since this role was first created -- never surfaced until this
