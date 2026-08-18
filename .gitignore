@@ -31,6 +31,12 @@ data/raw/**/*.md
 seed_*.log
 seed_*.pid
 
+# SEC EDGAR downloaded filings (fetch_sec_edgar.py) -- large (full-submission.txt
+# alone measured 29.5MB for one real MRK 10-K) and reproducible any time via
+# sec-edgar-downloader; never meant to be version-controlled, same reasoning
+# as qdrant_storage/ and neo4j_data/ below.
+data/raw/sec_edgar/
+
 # node / Next.js
 frontend/node_modules/
 frontend/.next/

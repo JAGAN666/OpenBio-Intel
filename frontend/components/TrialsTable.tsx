@@ -39,7 +39,7 @@ const columnHelper = createColumnHelper<typeof features, TrialRow>();
 /** Intervention name -> pill. */
 function Pill({ label }: { label: string }) {
   return (
-    <span className="inline-flex max-w-[15rem] items-center truncate rounded-full border border-slate-200 bg-slate-50 px-2 py-0.5 text-xs font-medium text-slate-700">
+    <span className="inline-flex max-w-[15rem] items-center truncate rounded-full border border-slate-200 bg-slate-50 px-2 py-0.5 text-xs font-medium text-slate-700 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-300">
       {label}
     </span>
   );
@@ -52,12 +52,12 @@ function Pill({ label }: { label: string }) {
  */
 function MechanismBadge({ described }: { described: boolean }) {
   return described ? (
-    <span className="inline-flex items-center gap-1 rounded-md border border-emerald-200 bg-emerald-50 px-2 py-0.5 text-[0.7rem] font-semibold uppercase tracking-wide text-emerald-700">
+    <span className="inline-flex items-center gap-1 rounded-md border border-emerald-200 bg-emerald-50 px-2 py-0.5 text-[0.7rem] font-semibold uppercase tracking-wide text-emerald-700 dark:border-emerald-900/60 dark:bg-emerald-950/40 dark:text-emerald-400">
       <Target className="h-3 w-3" aria-hidden />
       Target Identified
     </span>
   ) : (
-    <span className="inline-flex items-center gap-1 rounded-md border border-slate-200 bg-slate-100 px-2 py-0.5 text-[0.7rem] font-semibold uppercase tracking-wide text-slate-500">
+    <span className="inline-flex items-center gap-1 rounded-md border border-slate-200 bg-slate-100 px-2 py-0.5 text-[0.7rem] font-semibold uppercase tracking-wide text-slate-500 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-400">
       <CircleDashed className="h-3 w-3" aria-hidden />
       Design Details Only
     </span>
@@ -78,7 +78,7 @@ const columns: ColumnDef<typeof features, TrialRow, any>[] = [
           href={`${CTGOV}${id}`}
           target="_blank"
           rel="noopener noreferrer"
-          className="group inline-flex items-center gap-1 font-mono text-sm text-sky-700 hover:text-sky-900"
+          className="group inline-flex items-center gap-1 font-mono text-sm text-sky-700 hover:text-sky-900 dark:text-sky-400 dark:hover:text-sky-300"
         >
           {id}
           <ExternalLink
@@ -92,24 +92,29 @@ const columns: ColumnDef<typeof features, TrialRow, any>[] = [
   columnHelper.accessor("phase", {
     header: "Phase",
     cell: (info) => (
-      <span className="whitespace-nowrap text-sm text-slate-700">{info.getValue()}</span>
+      <span className="whitespace-nowrap text-sm text-slate-700 dark:text-slate-300">{info.getValue()}</span>
     ),
   }),
   columnHelper.accessor("sponsor", {
     header: "Sponsor",
     cell: (info) => (
-      <span className="text-sm text-slate-700">{info.getValue()}</span>
+      <span className="text-sm text-slate-700 dark:text-slate-300">{info.getValue()}</span>
     ),
   }),
   columnHelper.accessor("interventions", {
     header: "Interventions",
     enableSorting: false,
     cell: (info) => {
-      const items = info.row.original.interventions;
+      // Deduped, not just re-keyed -- the extraction LLM occasionally
+      // repeats the same intervention name twice in one trial's array
+      // (e.g. "Intensity-Modulated Radiation Therapy" appearing twice),
+      // which both collided React's key={name} and rendered the same pill
+      // twice for no reason.
+      const items = Array.from(new Set(info.row.original.interventions));
       return (
         <div className="flex flex-wrap gap-1">
           {items.length === 0 ? (
-            <span className="text-xs text-slate-400">—</span>
+            <span className="text-xs text-slate-400 dark:text-slate-600">—</span>
           ) : (
             items.map((name: string) => <Pill key={name} label={name} />)
           )}
@@ -123,7 +128,7 @@ const columns: ColumnDef<typeof features, TrialRow, any>[] = [
     cell: (info) => (
       <div className="min-w-[22rem] space-y-1.5">
         <MechanismBadge described={info.row.original.mechanism_described} />
-        <p className="text-sm leading-relaxed text-slate-600">{info.getValue()}</p>
+        <p className="text-sm leading-relaxed text-slate-600 dark:text-slate-400">{info.getValue()}</p>
       </div>
     ),
   }),
@@ -135,13 +140,13 @@ export default function TrialsTable({ data }: { data: TrialRow[] }) {
   const described = data.filter((r) => r.mechanism_described).length;
 
   return (
-    <section className="rounded-xl border border-slate-200 bg-white shadow-sm">
-      <header className="flex flex-wrap items-center gap-2 border-b border-slate-200 px-6 py-4">
-        <Table2 className="h-4 w-4 text-slate-500" aria-hidden />
-        <h2 className="text-sm font-semibold uppercase tracking-wide text-slate-700">
+    <section className="rounded-xl border border-slate-200 bg-white shadow-sm dark:border-slate-800 dark:bg-slate-900">
+      <header className="flex flex-wrap items-center gap-2 border-b border-slate-200 px-6 py-4 dark:border-slate-800">
+        <Table2 className="h-4 w-4 text-slate-500 dark:text-slate-400" aria-hidden />
+        <h2 className="text-sm font-semibold uppercase tracking-wide text-slate-700 dark:text-slate-300">
           Comparative Trials Grid
         </h2>
-        <span className="ml-auto text-xs text-slate-500">
+        <span className="ml-auto text-xs text-slate-500 dark:text-slate-400">
           {data.length} trials · {described} with target identified ·{" "}
           {data.length - described} design details only
         </span>
@@ -149,7 +154,7 @@ export default function TrialsTable({ data }: { data: TrialRow[] }) {
 
       <div className="overflow-x-auto">
         <table className="w-full border-collapse text-left">
-          <thead className="bg-slate-50">
+          <thead className="bg-slate-50 dark:bg-slate-950/50">
             {table.getHeaderGroups().map((headerGroup) => (
               <tr key={headerGroup.id}>
                 {headerGroup.headers.map((header) => {
@@ -159,13 +164,13 @@ export default function TrialsTable({ data }: { data: TrialRow[] }) {
                     <th
                       key={header.id}
                       scope="col"
-                      className="border-b border-slate-200 px-4 py-3 align-bottom text-xs font-semibold uppercase tracking-wide text-slate-500"
+                      className="border-b border-slate-200 px-4 py-3 align-bottom text-xs font-semibold uppercase tracking-wide text-slate-500 dark:border-slate-800 dark:text-slate-400"
                     >
                       {sortable ? (
                         <button
                           type="button"
                           onClick={header.column.getToggleSortingHandler()}
-                          className="inline-flex items-center gap-1 hover:text-slate-800"
+                          className="inline-flex items-center gap-1 hover:text-slate-800 dark:hover:text-slate-200"
                         >
                           {flexRender(
                             header.column.columnDef.header,
@@ -191,7 +196,7 @@ export default function TrialsTable({ data }: { data: TrialRow[] }) {
 
           <tbody>
             {table.getRowModel().rows.map((row) => (
-              <tr key={row.id} className="border-b border-slate-100 last:border-0 hover:bg-slate-50/60">
+              <tr key={row.id} className="border-b border-slate-100 last:border-0 hover:bg-slate-50/60 dark:border-slate-800 dark:hover:bg-slate-800/40">
                 {/* getAllCells, not getVisibleCells — the latter is provided
                     by columnVisibilityFeature, which this table does not use. */}
                 {row.getAllCells().map((cell) => (

@@ -1,0 +1,87 @@
+{
+  "$defs": {
+    "CatalystEvent": {
+      "description": "One chronologically-placed catalyst event for the frontend timeline.\ndisplay_date/year/quarter are computed deterministically from the\nLLM-cited raw_date by _parse_catalyst_date -- never LLM output.",
+      "properties": {
+        "display_date": {
+          "description": "Human-readable date/period, no more precise than the source data supports.",
+          "title": "Display Date",
+          "type": "string"
+        },
+        "year": {
+          "description": "Calendar year, for chronological grouping.",
+          "title": "Year",
+          "type": "integer"
+        },
+        "quarter": {
+          "description": "One of 'Q1'..'Q4' for a specific quarter, 'H1'/'H2' when the source only supports half-year precision, or '' when only a bare year is known.",
+          "title": "Quarter",
+          "type": "string"
+        },
+        "company": {
+          "title": "Company",
+          "type": "string"
+        },
+        "drug_name": {
+          "title": "Drug Name",
+          "type": "string"
+        },
+        "event_type": {
+          "title": "Event Type",
+          "type": "string"
+        },
+        "indication": {
+          "title": "Indication",
+          "type": "string"
+        },
+        "source": {
+          "description": "NCT id or SEC AccessionNumber this event is grounded in.",
+          "title": "Source",
+          "type": "string"
+        },
+        "source_type": {
+          "description": "'trial' or 'sec'.",
+          "title": "Source Type",
+          "type": "string"
+        }
+      },
+      "required": [
+        "display_date",
+        "year",
+        "quarter",
+        "company",
+        "drug_name",
+        "event_type",
+        "indication",
+        "source",
+        "source_type"
+      ],
+      "title": "CatalystEvent",
+      "type": "object",
+      "additionalProperties": false
+    }
+  },
+  "description": "Final output: a chronologically sorted catalyst timeline for a query.",
+  "properties": {
+    "query": {
+      "description": "The therapeutic area / event-type query this timeline covers.",
+      "title": "Query",
+      "type": "string"
+    },
+    "events": {
+      "description": "Chronologically sorted, earliest first.",
+      "items": {
+        "$ref": "#/$defs/CatalystEvent"
+      },
+      "title": "Events",
+      "type": "array"
+    }
+  },
+  "required": [
+    "query",
+    "events"
+  ],
+  "title": "CatalystTimeline",
+  "type": "object",
+  "additionalProperties": false
+}

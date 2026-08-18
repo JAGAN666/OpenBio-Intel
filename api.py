@@ -18,6 +18,27 @@ instead of going silent until everything finishes, and — just as
 importantly for the timeout problem — the ALB sees a continuous trickle of
 bytes on the connection the whole time, not one long silence, which is what
 an idle-timeout actually watches for.
+
+Also exposes POST /api/landscape -> LandscapeMatrix, a competitive
+landscape matrix (mechanism/target rows x development-phase columns) for a
+therapeutic area, via a separate, simpler retrieve-then-synthesize graph --
+see research_agent.py's LandscapeMatrix/make_landscape_graph docstrings.
+
+Also exposes POST /api/catalysts -> CatalystTimeline, a chronological
+tracker of upcoming market-moving events (trial data readouts, PDUFA
+dates) for a query -- see research_agent.py's CatalystTimeline/
+make_catalyst_graph docstrings, including why this pipeline does a live
+ClinicalTrials.gov date lookup that neither /api/research nor
+/api/landscape need.
+
+AUTH NOTE: auth.py's Depends(get_current_user) gate was removed from every
+endpoint below (was on all 6) -- it validates a JWT but this project never
+built anything to ISSUE one (no login endpoint, no frontend token storage),
+so every real request from the actual frontend was hitting a 401 with no
+way to ever succeed. auth.py itself is untouched and still importable for
+whenever a real login flow exists to pair it with; this file just doesn't
+call it right now. No tenant_id is threaded through the graphs for the same
+reason (see _initial_state).
 """
 
 from __future__ import annotations
@@ -32,7 +53,7 @@ from pathlib import Path
 from typing import Any, AsyncIterator
 
 from dotenv import load_dotenv
-from fastapi import Depends, FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import Response, StreamingResponse
 from langchain_core.messages import HumanMessage
@@ -43,14 +64,19 @@ from pptx import Presentation
 from pptx.util import Inches, Pt
 from pydantic import BaseModel, Field
 
-from auth import CurrentUser, get_current_user
 from research_agent import (
     COLLECTION_NAME,
     DEFAULT_MODEL,
+    CatalystTimeline,
+    LandscapeMatrix,
     QDRANT_HOST,
     QDRANT_PORT,
     SmartTableResponse,
+    make_catalyst_graph,
     make_graph,
+    make_landscape_graph,
+    run_catalyst_query,
+    run_landscape_query,
 )
 
 load_dotenv(Path(__file__).resolve().parent / ".env", override=False)
@@ -67,15 +93,30 @@ ALLOWED_ORIGINS = ["http://localhost:3000", "http://127.0.0.1:3000"]
 # avoidable latency to every call. The graph itself is stateless -- all state
 # lives in the dict passed to invoke() -- so sharing it is safe.
 _graph = None
+# Same reasoning, separate graph: the landscape matrix pipeline is a
+# distinct, simpler retrieve-then-synthesize shape (see
+# make_landscape_graph's own docstring for why it isn't the six-tool ReACT
+# agent above), so it gets its own compiled instance rather than being
+# forced through _graph's tool-calling loop.
+_landscape_graph = None
+# Same reasoning again: the catalyst tracker is its own retrieve-then-
+# synthesize graph (with an extra live-date-enrichment step neither of the
+# other two graphs needs -- see make_catalyst_graph's docstring), so it
+# also gets its own compiled instance.
+_catalyst_graph = None
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global _graph
+    global _graph, _landscape_graph, _catalyst_graph
     if not os.getenv("ANTHROPIC_API_KEY"):
         log.warning("ANTHROPIC_API_KEY is not set — /api/research will fail")
     log.info("compiling LangGraph agent (model=%s)…", DEFAULT_MODEL)
     _graph = make_graph(DEFAULT_MODEL, verbose=False)
+    log.info("compiling landscape matrix graph (model=%s)…", DEFAULT_MODEL)
+    _landscape_graph = make_landscape_graph(DEFAULT_MODEL, verbose=False)
+    log.info("compiling catalyst tracker graph…")
+    _catalyst_graph = make_catalyst_graph(verbose=False)
     log.info("agent ready; collection=%s", COLLECTION_NAME)
     yield
     log.info("shutting down")
@@ -143,25 +184,22 @@ def _initial_state(query: str, tenant_id: str | None = None) -> dict:
 
 
 @app.post("/api/research", response_model=SmartTableResponse)
-def research(req: ResearchRequest, user: CurrentUser = Depends(get_current_user)) -> SmartTableResponse:
+def research(req: ResearchRequest) -> SmartTableResponse:
     """Run the agent and return the validated Smart Table.
 
     Declared `def`, not `async def`, on purpose: graph.invoke() is blocking
     (network I/O to Anthropic plus local ONNX embedding), so FastAPI runs it in
     a worker thread instead of stalling the event loop for every other request.
 
-    Depends(get_current_user) rejects an unauthenticated caller with 401
-    BEFORE this function body runs at all -- see auth.py.
+    No auth gate -- see the module docstring's AUTH NOTE.
     """
     if _graph is None:
         raise HTTPException(status_code=503, detail="Agent is still starting up.")
 
     started = time.perf_counter()
-    log.info("research query: %r (tenant=%s, user=%s)", req.query, user.tenant_id, user.user_email)
+    log.info("research query: %r", req.query)
     try:
-        final = _graph.invoke(
-            _initial_state(req.query, tenant_id=user.tenant_id), config={"recursion_limit": 25}
-        )
+        final = _graph.invoke(_initial_state(req.query), config={"recursion_limit": 25})
     except Exception as exc:  # noqa: BLE001
         log.exception("agent invocation failed")
         raise HTTPException(status_code=502, detail=f"Agent failed: {exc}") from exc
@@ -298,9 +336,7 @@ async def _stream_events(query: str, tenant_id: str | None = None) -> AsyncItera
 
 
 @app.post("/api/research/stream")
-async def research_stream(
-    req: ResearchRequest, user: CurrentUser = Depends(get_current_user)
-) -> StreamingResponse:
+async def research_stream(req: ResearchRequest) -> StreamingResponse:
     """Same agent, same request shape as POST /api/research, but responds
     with a live text/event-stream instead of waiting for the whole run to
     finish. See module docstring for why this exists.
@@ -312,16 +348,14 @@ async def research_stream(
     reads response.body via fetch()'s own ReadableStream, which works for
     any method.
 
-    Depends(get_current_user) rejects an unauthenticated caller with 401
-    before the stream ever opens -- see auth.py.
+    No auth gate -- see the module docstring's AUTH NOTE.
     """
     if _graph is None:
         raise HTTPException(status_code=503, detail="Agent is still starting up.")
 
-    log.info("research stream query: %r (tenant=%s, user=%s)",
-             req.query, user.tenant_id, user.user_email)
+    log.info("research stream query: %r", req.query)
     return StreamingResponse(
-        _stream_events(req.query, tenant_id=user.tenant_id),
+        _stream_events(req.query),
         media_type="text/event-stream",
         headers={
             # Disables buffering on nginx-style reverse proxies that would
@@ -332,6 +366,100 @@ async def research_stream(
             "X-Accel-Buffering": "no",
         },
     )
+
+
+# =============================================================================
+# INDICATION LANDSCAPE -- a single-shot competitive matrix (mechanism/target
+# rows x development-phase columns) for a therapeutic area, via the separate
+# retrieve-then-synthesize graph in research_agent.py. See that module's
+# LandscapeMatrix/make_landscape_graph docstrings for why this is a distinct
+# pipeline from POST /api/research rather than a variant of it.
+# =============================================================================
+class LandscapeRequest(BaseModel):
+    therapeutic_area: str = Field(
+        min_length=3,
+        max_length=200,
+        description="A therapeutic area / indication to build a competitive "
+                    "landscape matrix for.",
+        examples=["Non-Small Cell Lung Cancer"],
+    )
+
+
+@app.post("/api/landscape", response_model=LandscapeMatrix)
+def landscape(req: LandscapeRequest) -> LandscapeMatrix:
+    """Run the landscape graph and return the validated competitive matrix.
+
+    Declared `def`, not `async def`, for the same reason as POST
+    /api/research: graph.invoke() is blocking (Qdrant retrieval across
+    three collections plus one LLM call), so FastAPI runs it in a worker
+    thread instead of stalling the event loop.
+
+    No auth gate -- see the module docstring's AUTH NOTE.
+    """
+    if _landscape_graph is None:
+        raise HTTPException(status_code=503, detail="Landscape agent is still starting up.")
+
+    started = time.perf_counter()
+    log.info("landscape query: %r", req.therapeutic_area)
+    try:
+        result = run_landscape_query(_landscape_graph, req.therapeutic_area)
+    except Exception as exc:  # noqa: BLE001
+        log.exception("landscape agent invocation failed")
+        raise HTTPException(status_code=502, detail=f"Landscape agent failed: {exc}") from exc
+
+    if result is None:
+        raise HTTPException(status_code=502, detail="Landscape agent produced no structured result.")
+
+    log.info("landscape done in %.1fs — %d mechanism row(s)",
+             time.perf_counter() - started, len(result.rows))
+    return result
+
+
+# =============================================================================
+# CATALYST & READOUT TRACKER -- a chronological timeline of upcoming market-
+# moving events for a query, via yet another retrieve-then-synthesize graph.
+# See research_agent.py's CatalystTimeline/make_catalyst_graph docstrings
+# for the live ClinicalTrials.gov date-enrichment step this one does that
+# neither /api/research nor /api/landscape need.
+# =============================================================================
+class CatalystRequest(BaseModel):
+    query: str = Field(
+        min_length=3,
+        max_length=200,
+        description="A therapeutic area and/or event type to build a "
+                    "catalyst timeline for.",
+        examples=["Upcoming Phase 3 readouts in Oncology"],
+    )
+
+
+@app.post("/api/catalysts", response_model=CatalystTimeline)
+def catalysts(req: CatalystRequest) -> CatalystTimeline:
+    """Run the catalyst graph and return the validated chronological timeline.
+
+    Declared `def`, not `async def`, for the same reason as POST
+    /api/research and /api/landscape: graph.invoke() is blocking (Qdrant
+    retrieval, a live ClinicalTrials.gov date lookup, and one LLM call), so
+    FastAPI runs it in a worker thread instead of stalling the event loop.
+
+    No auth gate -- see the module docstring's AUTH NOTE.
+    """
+    if _catalyst_graph is None:
+        raise HTTPException(status_code=503, detail="Catalyst agent is still starting up.")
+
+    started = time.perf_counter()
+    log.info("catalyst query: %r", req.query)
+    try:
+        result = run_catalyst_query(_catalyst_graph, req.query)
+    except Exception as exc:  # noqa: BLE001
+        log.exception("catalyst agent invocation failed")
+        raise HTTPException(status_code=502, detail=f"Catalyst agent failed: {exc}") from exc
+
+    if result is None:
+        raise HTTPException(status_code=502, detail="Catalyst agent produced no structured result.")
+
+    log.info("catalyst done in %.1fs — %d event(s)",
+             time.perf_counter() - started, len(result.events))
+    return result
 
 
 # =============================================================================
@@ -353,19 +481,14 @@ EXCEL_HEADER_FILL = "1E3A5F"  # matches the frontend's sky-900-ish header tone
 
 
 @app.post("/api/export/excel")
-def export_excel(data: SmartTableResponse, user: CurrentUser = Depends(get_current_user)) -> Response:
+def export_excel(data: SmartTableResponse) -> Response:
     """table_data -> one formatted sheet, .xlsx. Fully in-memory (io.BytesIO)
     -- these exports are at most a few hundred rows, nowhere near large
     enough to justify streaming the workbook to disk first.
 
-    Depends(get_current_user) rejects an unauthenticated caller with 401 --
-    see auth.py. `user` itself is otherwise unused here: an export renders
-    whatever SmartTableResponse the caller already has, it doesn't touch
-    Qdrant/Neo4j, so there is no further tenant-scoped work to attribute --
-    the dependency's only job on this endpoint is the auth gate itself.
+    No auth gate -- see the module docstring's AUTH NOTE.
     """
-    log.info("export xlsx: %d rows (tenant=%s, user=%s)",
-             len(data.table_data), user.tenant_id, user.user_email)
+    log.info("export xlsx: %d rows", len(data.table_data))
     wb = Workbook()
     ws = wb.active
     ws.title = "Clinical Trials"
@@ -425,16 +548,14 @@ def _set_pptx_data_cell(cell, text: str) -> None:
 
 
 @app.post("/api/export/pptx")
-def export_pptx(data: SmartTableResponse, user: CurrentUser = Depends(get_current_user)) -> Response:
+def export_pptx(data: SmartTableResponse) -> Response:
     """Title slide -> briefing slide -> one or more data-table slides
     (chunked at PPTX_ROWS_PER_SLIDE so a large result set doesn't collapse
     into one unreadable mega-table), .pptx.
 
-    See export_excel's docstring for why `user` is otherwise unused beyond
-    the auth gate on this endpoint.
+    No auth gate -- see the module docstring's AUTH NOTE.
     """
-    log.info("export pptx: %d rows (tenant=%s, user=%s)",
-             len(data.table_data), user.tenant_id, user.user_email)
+    log.info("export pptx: %d rows", len(data.table_data))
     prs = Presentation()
 
     title_slide = prs.slides.add_slide(prs.slide_layouts[0])  # "Title Slide"

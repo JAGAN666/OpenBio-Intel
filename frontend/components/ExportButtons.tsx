@@ -66,7 +66,7 @@ export default function ExportButtons({
             type="button"
             disabled={pending !== null}
             onClick={() => void handleExport(format)}
-            className="inline-flex items-center gap-2 rounded-lg border border-slate-300 bg-white px-4 py-2 text-sm font-medium text-slate-700 transition-colors hover:border-sky-300 hover:text-sky-700 disabled:cursor-not-allowed disabled:opacity-50"
+            className="inline-flex items-center gap-2 rounded-lg border border-slate-300 bg-white px-4 py-2 text-sm font-medium text-slate-700 transition-colors hover:border-sky-300 hover:text-sky-700 disabled:cursor-not-allowed disabled:opacity-50 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-300 dark:hover:border-sky-700 dark:hover:text-sky-400"
           >
             {isPending ? (
               <Loader2 className="h-4 w-4 animate-spin" aria-hidden />
@@ -78,7 +78,7 @@ export default function ExportButtons({
         );
       })}
       {error && (
-        <span className="inline-flex items-center gap-1 text-xs text-red-600">
+        <span className="inline-flex items-center gap-1 text-xs text-red-600 dark:text-red-400">
           <AlertTriangle className="h-3.5 w-3.5" aria-hidden />
           Export failed: {error}
         </span>

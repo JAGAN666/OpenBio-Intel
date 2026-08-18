@@ -23,7 +23,7 @@ function renderInline(text: string, keyPrefix: string) {
 
     if (token.startsWith("**")) {
       nodes.push(
-        <strong key={`${keyPrefix}-b-${i++}`} className="font-semibold text-slate-900">
+        <strong key={`${keyPrefix}-b-${i++}`} className="font-semibold text-slate-900 dark:text-slate-100">
           {token.slice(2, -2)}
         </strong>,
       );
@@ -34,7 +34,7 @@ function renderInline(text: string, keyPrefix: string) {
           href={`${CTGOV}${token}`}
           target="_blank"
           rel="noopener noreferrer"
-          className="font-mono text-[0.85em] text-sky-700 underline decoration-sky-300 underline-offset-2 hover:text-sky-900 hover:decoration-sky-500"
+          className="font-mono text-[0.85em] text-sky-700 underline decoration-sky-300 underline-offset-2 hover:text-sky-900 hover:decoration-sky-500 dark:text-sky-400 dark:decoration-sky-700 dark:hover:text-sky-300 dark:hover:decoration-sky-500"
         >
           {token}
         </a>,
@@ -50,18 +50,18 @@ export default function BriefingCard({ summary }: { summary: string }) {
   const paragraphs = summary.split("\n\n").filter((p) => p.trim().length > 0);
 
   return (
-    <section className="rounded-xl border border-slate-200 bg-white shadow-sm">
-      <header className="flex items-center gap-2 border-b border-slate-200 px-6 py-4">
-        <FileText className="h-4 w-4 text-slate-500" aria-hidden />
-        <h2 className="text-sm font-semibold uppercase tracking-wide text-slate-700">
+    <section className="rounded-xl border border-slate-200 bg-white shadow-sm dark:border-slate-800 dark:bg-slate-900">
+      <header className="flex items-center gap-2 border-b border-slate-200 px-6 py-4 dark:border-slate-800">
+        <FileText className="h-4 w-4 text-slate-500 dark:text-slate-400" aria-hidden />
+        <h2 className="text-sm font-semibold uppercase tracking-wide text-slate-700 dark:text-slate-300">
           The Briefing
         </h2>
-        <span className="ml-auto text-xs text-slate-400">Executive summary</span>
+        <span className="ml-auto text-xs text-slate-400 dark:text-slate-500">Executive summary</span>
       </header>
 
       <div className="space-y-4 px-6 py-5">
         {paragraphs.map((p, idx) => (
-          <p key={idx} className="text-[0.95rem] leading-relaxed text-slate-700">
+          <p key={idx} className="text-[0.95rem] leading-relaxed text-slate-700 dark:text-slate-300">
             {renderInline(p, `p${idx}`)}
           </p>
         ))}

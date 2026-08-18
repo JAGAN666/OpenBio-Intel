@@ -1,0 +1,113 @@
+{
+  "$defs": {
+    "DrugEntry": {
+      "description": "One drug placed in one phase cell of the landscape matrix.",
+      "properties": {
+        "name": {
+          "description": "Drug name as it appears in the source record -- generic or brand name, copied exactly, never invented.",
+          "title": "Name",
+          "type": "string"
+        },
+        "sponsor": {
+          "description": "The sponsor/company developing or marketing this drug for this indication, taken from the source record (LeadSponsorName for a trial, SponsorName for an FDA record). Use 'Unknown sponsor' only if genuinely not stated anywhere in the evidence.",
+          "title": "Sponsor",
+          "type": "string"
+        },
+        "source": {
+          "description": "Where this entry's phase placement comes from: an NCT id (e.g. 'NCT01234567') for trial-derived placement, an FDA application number (e.g. 'BLA125514') for FDA-derived Approved placement, or a PMCID (e.g. 'PMC12345678') for a PubMed-derived Preclinical placement. Copied exactly from the record being cited -- never invented.",
+          "title": "Source",
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "sponsor",
+        "source"
+      ],
+      "title": "DrugEntry",
+      "type": "object",
+      "additionalProperties": false
+    },
+    "MechanismRow": {
+      "description": "One row of the landscape matrix -- a single mechanism/target.",
+      "properties": {
+        "mechanism": {
+          "description": "A canonical, clinical-grade mechanism of action or molecular target class, e.g. 'PD-1 / PD-L1 Checkpoint Inhibitor', 'EGFR Inhibitor', 'KRAS G12C Inhibitor'. Standard pharmacological classification of a named, real drug IS permitted here even when the retrieved snippet doesn't spell out the mechanism verbatim -- see LANDSCAPE_SYSTEM's classification-vs-study-facts distinction. Use the literal string 'Other / Unspecified Mechanism' only for a genuinely undisclosed investigational code with no published target anywhere in general medical literature.",
+          "title": "Mechanism",
+          "type": "string"
+        },
+        "cells": {
+          "description": "Exactly one PhaseCell per fixed phase column, in the SAME order given in the prompt (Preclinical, Phase 1, Phase 2, Phase 3, Approved) -- always all 5, even when empty.",
+          "items": {
+            "$ref": "#/$defs/PhaseCell"
+          },
+          "title": "Cells",
+          "type": "array"
+        }
+      },
+      "required": [
+        "mechanism",
+        "cells"
+      ],
+      "title": "MechanismRow",
+      "type": "object",
+      "additionalProperties": false
+    },
+    "PhaseCell": {
+      "description": "One column's contents within one mechanism row.",
+      "properties": {
+        "phase": {
+          "description": "One of: Preclinical, Phase 1, Phase 2, Phase 3, Approved -- must match one of the fixed column names given in the prompt exactly.",
+          "title": "Phase",
+          "type": "string"
+        },
+        "drugs": {
+          "description": "Every drug from the retrieved evidence whose most advanced stage for this indication is this phase. Empty list if none -- an empty list is the correct, expected representation of 'nothing at this phase for this mechanism,' not something to omit.",
+          "items": {
+            "$ref": "#/$defs/DrugEntry"
+          },
+          "title": "Drugs",
+          "type": "array"
+        }
+      },
+      "required": [
+        "phase"
+      ],
+      "title": "PhaseCell",
+      "type": "object",
+      "additionalProperties": false
+    }
+  },
+  "description": "Final output: a therapeutic area's competitive landscape matrix.",
+  "properties": {
+    "therapeutic_area": {
+      "description": "The therapeutic area/indication this landscape covers, copied from the user's request.",
+      "title": "Therapeutic Area",
+      "type": "string"
+    },
+    "phases": {
+      "description": "The fixed column headers, in display order: Preclinical, Phase 1, Phase 2, Phase 3, Approved.",
+      "items": {
+        "type": "string"
+      },
+      "title": "Phases",
+      "type": "array"
+    },
+    "rows": {
+      "description": "One row per distinct mechanism/target genuinely found in the retrieved evidence, most-populated rows first.",
+      "items": {
+        "$ref": "#/$defs/MechanismRow"
+      },
+      "title": "Rows",
+      "type": "array"
+    }
+  },
+  "required": [
+    "therapeutic_area",
+    "phases",
+    "rows"
+  ],
+  "title": "LandscapeMatrix",
+  "type": "object",
+  "additionalProperties": false
+}

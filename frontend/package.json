@@ -7,7 +7,9 @@
     "build": "next build",
     "start": "next start",
     "lint": "eslint",
-    "sync-types": "node -e \"const { compileFromFile } = require('json-schema-to-typescript'); const fs = require('fs'); compileFromFile('schema.json').then(ts => fs.writeFileSync('types/trial.ts', ts))\""
+    "sync-types": "node -e \"const { compileFromFile } = require('json-schema-to-typescript'); const fs = require('fs'); compileFromFile('schema.json').then(ts => fs.writeFileSync('types/trial.ts', ts))\"",
+    "sync-types:landscape": "node -e \"const { compileFromFile } = require('json-schema-to-typescript'); const fs = require('fs'); compileFromFile('schema_landscape.json').then(ts => fs.writeFileSync('types/landscape.ts', ts))\"",
+    "sync-types:catalysts": "node -e \"const { compileFromFile } = require('json-schema-to-typescript'); const fs = require('fs'); compileFromFile('schema_catalysts.json').then(ts => fs.writeFileSync('types/catalysts.ts', ts))\""
   },
   "dependencies": {
     "@tanstack/react-table": "^9.1.2",

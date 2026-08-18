@@ -12,9 +12,12 @@ const eslintConfig = defineConfig([
     "out/**",
     "build/**",
     "next-env.d.ts",
-    // Generated from Pydantic by `npm run sync-types` — never hand-edited,
-    // so linting it only produces noise about its own eslint-disable header.
+    // Generated from Pydantic by `npm run sync-types` / `sync-types:landscape`
+    // / `sync-types:catalysts` — never hand-edited, so linting them only
+    // produces noise about their own eslint-disable header.
     "types/trial.ts",
+    "types/landscape.ts",
+    "types/catalysts.ts",
   ]),
 ]);
 

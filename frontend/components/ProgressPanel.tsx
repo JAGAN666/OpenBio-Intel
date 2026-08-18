@@ -60,30 +60,30 @@ export default function ProgressPanel({
 
   return (
     <section
-      className="mb-8 rounded-xl border border-sky-200 bg-sky-50 px-6 py-6"
+      className="mb-8 rounded-xl border border-sky-200 bg-sky-50 px-6 py-6 dark:border-sky-900/60 dark:bg-sky-950/30"
       aria-live="polite"
     >
       <div className="flex items-center gap-3">
-        <Loader2 className="h-5 w-5 shrink-0 animate-spin text-sky-700" aria-hidden />
+        <Loader2 className="h-5 w-5 shrink-0 animate-spin text-sky-700 dark:text-sky-400" aria-hidden />
         <div>
-          <p className="text-sm font-semibold text-sky-900">
+          <p className="text-sm font-semibold text-sky-900 dark:text-sky-200">
             {current ? nodeMeta(current.node).label : "Starting…"}
           </p>
-          <p className="text-xs text-sky-700">{elapsed}s elapsed</p>
+          <p className="text-xs text-sky-700 dark:text-sky-400">{elapsed}s elapsed</p>
         </div>
       </div>
 
       {mapProgress && mapProgress.total > 0 && (
         <div className="mt-4">
-          <div className="flex items-center justify-between text-xs text-sky-800">
+          <div className="flex items-center justify-between text-xs text-sky-800 dark:text-sky-300">
             <span>Trials extracted (parallel Map workers)</span>
             <span className="font-mono">
               {mapProgress.completed} / {mapProgress.total}
             </span>
           </div>
-          <div className="mt-1 h-2 w-full overflow-hidden rounded-full bg-sky-100">
+          <div className="mt-1 h-2 w-full overflow-hidden rounded-full bg-sky-100 dark:bg-sky-900/50">
             <div
-              className="h-full rounded-full bg-sky-600 transition-all duration-300"
+              className="h-full rounded-full bg-sky-600 transition-all duration-300 dark:bg-sky-500"
               style={{
                 width: `${Math.min(100, (mapProgress.completed / mapProgress.total) * 100)}%`,
               }}
@@ -105,14 +105,14 @@ export default function ProgressPanel({
                   className={
                     "h-3.5 w-3.5 shrink-0 " +
                     (evt.phase === "done"
-                      ? "text-emerald-600"
+                      ? "text-emerald-600 dark:text-emerald-400"
                       : evt.phase === "error"
-                        ? "text-red-600"
-                        : "text-sky-500")
+                        ? "text-red-600 dark:text-red-400"
+                        : "text-sky-500 dark:text-sky-400")
                   }
                   aria-hidden
                 />
-                <span className={evt.phase === "error" ? "text-red-700" : "text-sky-800"}>
+                <span className={evt.phase === "error" ? "text-red-700 dark:text-red-400" : "text-sky-800 dark:text-sky-300"}>
                   {meta.label}
                   {node === "MapWorkers" && evt.total
                     ? ` (${evt.total} trial${evt.total === 1 ? "" : "s"})`

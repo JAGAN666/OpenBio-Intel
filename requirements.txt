@@ -94,3 +94,45 @@ langchain-text-splitters>=1.0.0   # MarkdownTextSplitter -- was previously
 ragas>=0.4.0
 datasets>=3.0.0
 langchain-nvidia-ai-endpoints>=1.4.0
+
+# --- literature + corporate filings ingestion (fetch_pubmed.py / fetch_sec_edgar.py) ---
+# NCBI Entrez E-utilities client. NOTE (verified live, not a Biopython bug):
+# Bio.Entrez uses raw urllib, not requests/certifi -- on a fresh python.org
+# macOS install (unlike Homebrew's), urllib's default SSL context has no CA
+# bundle linked until you run that installer's own "Install Certificates.command"
+# (see /Applications/Python <ver>/), which is a one-time environment fix, not
+# something this requirements file can pin its way around.
+biopython>=1.83
+# SEC EDGAR full-text-search + filing downloader. download_details=True (used
+# in fetch_sec_edgar.py) fetches a pre-isolated "primary-document.html" per
+# filing, verified directly to be far smaller and more directly parseable
+# than the default "full-submission.txt" (which wraps EVERY exhibit in one
+# file -- 29.5MB vs. 5.2MB for the same real MRK 10-K in that comparison).
+sec-edgar-downloader>=5.0.0
+beautifulsoup4>=4.12.0   # HTML stripping for SEC filings
+lxml>=5.0.0               # BeautifulSoup's parser backend here, and JATS XML
+                           # parsing for PMC full-text articles in fetch_pubmed.py
+
+# --- corporate news + earnings transcript ingestion (fetch_news_and_
+# transcripts.py) ---------------------------------------------------------
+# RSS parser for FDA/JNJ/AbbVie press-release feeds -- see that script's
+# module docstring for which feeds were verified live to be real and
+# relevant (and which weren't: Pfizer's own /rss.xml is real RSS but not
+# press releases, and Merck's /feed/ is a real, empty RSS envelope).
+feedparser>=6.0.0
+# NOTE ON THE SPEC'S "yfinance" SUGGESTION: verified live and NOT added --
+# yfinance's entire public API (checked via dir(Ticker)) has no method or
+# attribute containing "transcript" anywhere in its name. It is a
+# financial-data library (prices, EPS estimates, earnings DATES only), not
+# a transcript source, so it would be dead weight here. Real, free,
+# unpaywalled earnings call transcripts come from Motley Fool instead
+# (fetched directly via requests + BeautifulSoup, both already
+# dependencies) -- see fetch_news_and_transcripts.py's module docstring.
+
+# --- catalyst/readout tracker (research_agent.py's catalyst pipeline) -------
+# Was already present transitively (confirmed via `python -c "import
+# dateutil"` before adding this) but never declared explicitly -- now a
+# direct dependency: _parse_catalyst_date() imports it directly to parse
+# the free-form date strings an LLM cites from SEC filing text (e.g.
+# "September 21, 2026"), which Python's stdlib has no built-in parser for.
+python-dateutil>=2.9.0
