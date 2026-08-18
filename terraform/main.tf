@@ -1249,26 +1249,40 @@ data "aws_iam_policy_document" "github_actions_assume" {
       values   = ["sts.amazonaws.com"]
     }
     # Restricts WHICH workflow runs can assume this role: only runs
-    # triggered on var.github_repository's main branch -- matching
-    # deploy.yml's own `on: push: branches: [main]` trigger, so a
-    # workflow run on a fork, a PR, or any other branch cannot assume
-    # deploy credentials even if it somehow referenced this role ARN.
+    # triggered on var.github_repository's main branch, OR running under
+    # its "production" GitHub Environment (deploy.yml's terraform-apply
+    # job declares `environment: production`) -- matching deploy.yml's own
+    # `on: push: branches: [main]` trigger plus that one job's environment
+    # gate, so a workflow run on a fork, a PR, or any other branch/
+    # environment cannot assume deploy credentials even if it somehow
+    # referenced this role ARN.
     #
-    # StringLike with a wildcard, not StringEquals on the plain
-    # "owner/repo" form -- verified live (a real token, printed via a
-    # temporary debug step in deploy.yml, then removed) that this repo's
-    # actual `sub` claim is "repo:OWNER@<owner_id>/REPO@<repo_id>:ref:...",
-    # not the plain form, despite this repo's own
+    # StringLike with wildcards, not StringEquals on the plain "owner/repo"
+    # form -- verified live (a real token, printed via a temporary debug
+    # step in deploy.yml, then removed) that this repo's actual `sub`
+    # claim is "repo:OWNER@<owner_id>/REPO@<repo_id>:ref:..." for a normal
+    # job, not the plain form, despite this repo's own
     # /actions/oidc/customization/sub API reporting use_immutable_subject:
     # false. The wildcards only fill the gap where an optional "@<id>"
     # suffix may or may not appear on each half -- the owner/repo prefixes
-    # and the exact branch ref suffix are still fully anchored, so this
-    # is not a broadened trust boundary, just a tolerant one.
+    # and the exact branch-ref/environment suffix are still fully
+    # anchored, so this is not a broadened trust boundary, just a
+    # tolerant one.
+    #
+    # Two values, not one pattern covering both: GitHub issues a
+    # STRUCTURALLY different sub for a job with `environment:` set
+    # (ends ":environment:NAME") vs. one without (ends
+    # ":ref:refs/heads/BRANCH") -- confirmed live when build-backend/
+    # build-frontend (no environment) started succeeding right after the
+    # ref-suffixed value was added, while terraform-apply (environment:
+    # production) kept failing on the exact same trust policy until this
+    # second value was added.
     condition {
       test     = "StringLike"
       variable = "token.actions.githubusercontent.com:sub"
       values = [
-        "repo:${split("/", var.github_repository)[0]}*/${split("/", var.github_repository)[1]}*:ref:refs/heads/main"
+        "repo:${split("/", var.github_repository)[0]}*/${split("/", var.github_repository)[1]}*:ref:refs/heads/main",
+        "repo:${split("/", var.github_repository)[0]}*/${split("/", var.github_repository)[1]}*:environment:production",
       ]
     }
   }
