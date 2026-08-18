@@ -75,6 +75,18 @@ jobs:
         working-directory: frontend
         run: npm run lint
 
+      # Next 16 generates ambient types (LayoutProps<Route>, PageProps<Route>,
+      # etc.) into .next/types/ as a side effect of `next dev`/`next build` --
+      # verified live that a fresh checkout with neither has NO such types on
+      # disk, so `tsc --noEmit` fails with "Cannot find name 'LayoutProps'" on
+      # app/layout.tsx even though the code itself is correct, idiomatic Next
+      # 16. `next typegen` generates just those route/layout/page types
+      # without a full build -- verified live (removed .next/, ran only this,
+      # then `tsc --noEmit` passed clean) that it's sufficient on its own.
+      - name: Generate Next.js route types
+        working-directory: frontend
+        run: npx next typegen
+
       - name: TypeScript check
         working-directory: frontend
         run: npx tsc --noEmit
