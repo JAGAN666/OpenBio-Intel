@@ -104,18 +104,6 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # TEMPORARY -- prints only the sub/aud claims (repo name + branch,
-      # not sensitive) of the real OIDC token this job actually receives,
-      # to compare against the AWS trust policy's expected value instead
-      # of guessing further. Removed once the mismatch is found.
-      - name: DEBUG - print OIDC token claims
-        run: |
-          curl -sSL -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=sts.amazonaws.com" | jq -r '.value' > /tmp/token.txt
-          PAYLOAD=$(cut -d. -f2 /tmp/token.txt)
-          MOD=$(( ${#PAYLOAD} % 4 ))
-          if [ "$MOD" -eq 2 ]; then PAYLOAD="${PAYLOAD}=="; elif [ "$MOD" -eq 3 ]; then PAYLOAD="${PAYLOAD}="; fi
-          echo "$PAYLOAD" | tr '_-' '/+' | base64 -d | jq '{sub, aud, repository, repository_id, repository_owner, repository_owner_id, ref, ref_type}'
-
       - name: Configure AWS credentials (OIDC)
         uses: aws-actions/configure-aws-credentials@v4
         with:

@@ -1253,10 +1253,23 @@ data "aws_iam_policy_document" "github_actions_assume" {
     # deploy.yml's own `on: push: branches: [main]` trigger, so a
     # workflow run on a fork, a PR, or any other branch cannot assume
     # deploy credentials even if it somehow referenced this role ARN.
+    #
+    # StringLike with a wildcard, not StringEquals on the plain
+    # "owner/repo" form -- verified live (a real token, printed via a
+    # temporary debug step in deploy.yml, then removed) that this repo's
+    # actual `sub` claim is "repo:OWNER@<owner_id>/REPO@<repo_id>:ref:...",
+    # not the plain form, despite this repo's own
+    # /actions/oidc/customization/sub API reporting use_immutable_subject:
+    # false. The wildcards only fill the gap where an optional "@<id>"
+    # suffix may or may not appear on each half -- the owner/repo prefixes
+    # and the exact branch ref suffix are still fully anchored, so this
+    # is not a broadened trust boundary, just a tolerant one.
     condition {
-      test     = "StringEquals"
+      test     = "StringLike"
       variable = "token.actions.githubusercontent.com:sub"
-      values   = ["repo:${var.github_repository}:ref:refs/heads/main"]
+      values = [
+        "repo:${split("/", var.github_repository)[0]}*/${split("/", var.github_repository)[1]}*:ref:refs/heads/main"
+      ]
     }
   }
 }
