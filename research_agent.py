@@ -178,12 +178,15 @@ MAX_SYNTHESIS_RETRIES = 2  # Pydantic self-correction budget
 # bounds how many table_data rows a Smart Table query can ever produce (one
 # extract_trial Map worker per distinct trial retrieved, no separate cap
 # downstream in continue_to_extraction). Raised from a much smaller default
-# per explicit request for close to 50 rows back; matches
-# LANDSCAPE_TRIAL_LIMIT's precedent for "broad, not exploratory" retrieval.
-# The other five tools stay at their own small per-call limit -- they feed
-# supplementary evidence fused into a trial's row, not additional rows of
-# their own, so widening them doesn't move the row count the user asked for.
-TRIAL_SEARCH_LIMIT = 50
+# per explicit request for close to 50 rows back, then to 60 per a second
+# explicit request ("limit it to max 60 at least") after live testing
+# showed real run-to-run variance in how many rows a broad query actually
+# surfaces -- matches LANDSCAPE_TRIAL_LIMIT/CATALYST_TRIAL_LIMIT's precedent
+# for "broad, not exploratory" retrieval. The other five tools stay at
+# their own small per-call limit -- they feed supplementary evidence fused
+# into a trial's row, not additional rows of their own, so widening them
+# doesn't move the row count the user asked for.
+TRIAL_SEARCH_LIMIT = 60
 
 # The intent gate deliberately uses a separate, cheap/fast model rather than
 # the generator -- it is a single-purpose yes/no classifier that runs on
@@ -2378,7 +2381,10 @@ LANDSCAPE_PHASES = ["Preclinical", "Phase 1", "Phase 2", "Phase 3", "Approved"]
 # budget + a row cap now handle properly -- verified live that this
 # under-covered a large indication like NSCLC (only 4 rows, 19/23 drugs
 # stuck in the "no mechanism" bucket).
-LANDSCAPE_TRIAL_LIMIT = 50
+# Raised 50 -> 60 alongside TRIAL_SEARCH_LIMIT/CATALYST_TRIAL_LIMIT per
+# explicit request ("limit it to max 60 at least") -- same "broad, not
+# exploratory" reasoning above still applies at the new ceiling.
+LANDSCAPE_TRIAL_LIMIT = 60
 LANDSCAPE_FDA_LIMIT = 20
 LANDSCAPE_PUBMED_LIMIT = 20
 
@@ -2984,7 +2990,13 @@ class CatalystTimeline(BaseModel):
     events: list[CatalystEvent] = Field(description="Chronologically sorted, earliest first.")
 
 
-CATALYST_TRIAL_LIMIT = 40
+# Raised 40 -> 60 per explicit request ("limit it to max 60 at least") --
+# same TRIAL_SEARCH_LIMIT/LANDSCAPE_TRIAL_LIMIT reasoning: verified live
+# that event count for a broad query varies run-to-run partly on
+# LLM-synthesis selectivity, not just retrieval breadth, so a higher
+# retrieval ceiling gives the synthesis step more real candidates to
+# choose from rather than being starved before it even gets to judge them.
+CATALYST_TRIAL_LIMIT = 60
 CATALYST_SEC_LIMIT = 20
 CATALYST_TIMEOUT = 120
 
