@@ -1368,6 +1368,42 @@ data "aws_iam_policy_document" "github_actions_deploy" {
       values   = ["ecs-tasks.amazonaws.com", "events.amazonaws.com"]
     }
   }
+
+  # Missing since this role was first created -- never surfaced until this
+  # pipeline's very first real run, since nothing had ever pushed to main
+  # before. `terraform init`/plan/apply need to read and lock the remote
+  # state that main.tf's own backend "s3" block (above) points at; this
+  # role had every permission to manage the actual infrastructure but none
+  # to touch its own state backend. Scoped to exactly that one bucket
+  # (ListBucket needs the bucket ARN itself; object actions need the
+  # bucket ARN + "/*", not the bucket ARN alone) and that one DynamoDB
+  # table -- not S3/DynamoDB access generally.
+  statement {
+    sid    = "TerraformStateBackend"
+    effect = "Allow"
+    actions = [
+      "s3:GetObject",
+      "s3:PutObject",
+      "s3:ListBucket",
+    ]
+    resources = [
+      "arn:aws:s3:::medical-rag-terraform-state-${data.aws_caller_identity.current.account_id}",
+      "arn:aws:s3:::medical-rag-terraform-state-${data.aws_caller_identity.current.account_id}/*",
+    ]
+  }
+
+  statement {
+    sid    = "TerraformStateLock"
+    effect = "Allow"
+    actions = [
+      "dynamodb:GetItem",
+      "dynamodb:PutItem",
+      "dynamodb:DeleteItem",
+    ]
+    resources = [
+      "arn:aws:dynamodb:${var.aws_region}:${data.aws_caller_identity.current.account_id}:table/medical-rag-terraform-locks",
+    ]
+  }
 }
 
 resource "aws_iam_role_policy" "github_actions_deploy" {
