@@ -187,7 +187,7 @@ Contributions are welcome — see [CONTRIBUTING.md](CONTRIBUTING.md) for develop
 
 ## Contributors
 
-- **Jagan** ([@JAGAN666](https://github.com/JAGAN666)) — creator & maintainer
+- **JAGAN666** ([@JAGAN666](https://github.com/JAGAN666)) — creator & maintainer
 
 Want to see your name here? Open a PR — see [CONTRIBUTING.md](CONTRIBUTING.md).
 
