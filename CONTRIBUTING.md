@@ -13,8 +13,7 @@ cp .env.example .env   # fill in at least OPENAI_API_KEY and ANTHROPIC_API_KEY
 docker compose up -d qdrant neo4j
 
 # Python environment
-python3 -m venv .venv
-.venv/bin/pip install -r requirements.txt
+uv sync --locked          # creates .venv from the committed uv.lock (install uv: https://docs.astral.sh/uv/)
 
 # Backend
 .venv/bin/python -m uvicorn api:app --reload --port 8000

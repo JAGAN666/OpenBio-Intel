@@ -1,0 +1,296 @@
+annotated-doc==0.0.5
+    # via typer
+annotated-types==0.8.0
+    # via pydantic
+anyio==4.14.2
+    # via
+    #   httpx
+    #   httpx2
+    #   langsmith
+    #   openai
+blis==0.7.11
+    # via thinc
+boto3==1.43.78
+    # via -r requirements-etl.txt
+botocore==1.43.78
+    # via
+    #   boto3
+    #   s3transfer
+catalogue==2.0.10
+    # via
+    #   spacy
+    #   srsly
+    #   thinc
+certifi==2026.7.22
+    # via
+    #   httpcore
+    #   httpx
+    #   langchain-openai
+    #   requests
+charset-normalizer==3.5.1
+    # via requests
+click==8.4.2
+    # via -r requirements-etl.txt
+cloudpathlib==0.24.0
+    # via weasel
+confection==0.1.5
+    # via
+    #   thinc
+    #   weasel
+conllu==6.0.0
+    # via scispacy
+cymem==2.0.13
+    # via
+    #   preshed
+    #   spacy
+    #   thinc
+distro==1.9.0
+    # via langsmith
+grpcio==1.83.0
+    # via qdrant-client
+h11==0.16.0
+    # via
+    #   httpcore
+    #   httpcore2
+h2==4.4.1
+    # via httpx
+hpack==4.2.0
+    # via h2
+httpcore==1.0.9
+    # via httpx
+httpcore2==2.12.0
+    # via httpx2
+httpx==0.28.1
+    # via
+    #   langchain-core
+    #   langsmith
+    #   qdrant-client
+httpx2==2.12.0
+    # via openai
+hyperframe==6.1.0
+    # via h2
+idna==3.19
+    # via
+    #   anyio
+    #   httpx
+    #   httpx2
+    #   requests
+ijson==3.5.1
+    # via -r requirements-etl.txt
+jinja2==3.1.6
+    # via spacy
+jiter==0.16.0
+    # via openai
+jmespath==1.1.0
+    # via
+    #   boto3
+    #   botocore
+joblib==1.5.3
+    # via
+    #   scikit-learn
+    #   scispacy
+jsonpatch==1.33
+    # via langchain-core
+jsonpointer==3.1.1
+    # via jsonpatch
+langchain-core==1.6.0
+    # via langchain-openai
+langchain-openai==1.6.0
+    # via -r requirements-etl.txt
+langchain-protocol==0.0.18
+    # via langchain-core
+langcodes==3.5.1
+    # via spacy
+langsmith==0.11.1
+    # via langchain-core
+markdown-it-py==4.2.0
+    # via rich
+markupsafe==3.0.3
+    # via jinja2
+mdurl==0.1.2
+    # via markdown-it-py
+murmurhash==1.0.15
+    # via
+    #   preshed
+    #   spacy
+    #   thinc
+narwhals==2.25.0
+    # via scikit-learn
+neo4j==6.2.0
+    # via -r requirements-etl.txt
+nmslib-metabrainz==2.1.3
+    # via scispacy
+numpy==1.26.4
+    # via
+    #   blis
+    #   nmslib-metabrainz
+    #   qdrant-client
+    #   scikit-learn
+    #   scipy
+    #   scispacy
+    #   spacy
+    #   thinc
+openai==3.3.1
+    # via
+    #   -r requirements-etl.txt
+    #   langchain-openai
+orjson==3.12.0
+    # via langsmith
+packaging==26.3
+    # via
+    #   langchain-core
+    #   langsmith
+    #   spacy
+    #   thinc
+    #   weasel
+portalocker==3.2.0
+    # via qdrant-client
+preshed==3.0.13
+    # via
+    #   spacy
+    #   thinc
+protobuf==7.36.0
+    # via qdrant-client
+psutil==7.2.2
+    # via nmslib-metabrainz
+pybind11==3.1.0
+    # via nmslib-metabrainz
+pydantic==2.13.4
+    # via
+    #   confection
+    #   langchain-core
+    #   langsmith
+    #   openai
+    #   qdrant-client
+    #   spacy
+    #   thinc
+    #   weasel
+pydantic-core==2.46.4
+    # via pydantic
+pygments==2.21.0
+    # via rich
+pysbd==0.3.4
+    # via scispacy
+python-dateutil==2.9.0.post0
+    # via botocore
+python-dotenv==1.2.3
+    # via -r requirements-etl.txt
+pytz==2026.3.post1
+    # via neo4j
+pyyaml==6.0.3
+    # via langchain-core
+qdrant-client==1.18.0
+    # via -r requirements-etl.txt
+regex==2026.7.19
+    # via tiktoken
+requests==2.34.2
+    # via
+    #   -r requirements-etl.txt
+    #   langsmith
+    #   requests-toolbelt
+    #   scispacy
+    #   spacy
+    #   tiktoken
+    #   weasel
+requests-toolbelt==1.0.0
+    # via langsmith
+rich==15.0.0
+    # via typer
+s3transfer==0.19.2
+    # via boto3
+scikit-learn==1.9.0
+    # via scispacy
+scipy==1.17.1
+    # via
+    #   scikit-learn
+    #   scispacy
+scispacy==0.6.2
+    # via -r requirements-etl.txt
+setuptools==84.0.0
+    # via
+    #   spacy
+    #   thinc
+shellingham==1.5.4
+    # via typer
+six==1.17.0
+    # via python-dateutil
+smart-open==7.7.1
+    # via weasel
+sniffio==1.3.1
+    # via
+    #   langsmith
+    #   openai
+spacy==3.7.5
+    # via
+    #   -r requirements-etl.txt
+    #   scispacy
+spacy-legacy==3.0.12
+    # via spacy
+spacy-loggers==1.0.5
+    # via spacy
+srsly==2.5.3
+    # via
+    #   confection
+    #   spacy
+    #   thinc
+    #   weasel
+tenacity==9.1.4
+    # via
+    #   -r requirements-etl.txt
+    #   langchain-core
+thinc==8.2.5
+    # via spacy
+threadpoolctl==3.6.0
+    # via scikit-learn
+tiktoken==0.14.0
+    # via langchain-openai
+tqdm==4.70.0
+    # via spacy
+truststore==0.10.4
+    # via
+    #   httpcore2
+    #   httpx2
+typer==0.27.1
+    # via
+    #   spacy
+    #   typer-slim
+typer-slim==0.24.0
+    # via weasel
+typing-extensions==4.16.0
+    # via
+    #   anyio
+    #   grpcio
+    #   httpx2
+    #   langchain-core
+    #   langchain-protocol
+    #   langsmith
+    #   openai
+    #   pydantic
+    #   pydantic-core
+    #   typing-inspection
+typing-inspection==0.4.4
+    # via pydantic
+urllib3==2.7.0
+    # via
+    #   botocore
+    #   qdrant-client
+    #   requests
+uuid-utils==0.17.0
+    # via
+    #   langchain-core
+    #   langsmith
+wasabi==1.1.3
+    # via
+    #   spacy
+    #   thinc
+    #   weasel
+weasel==0.4.3
+    # via spacy
+websockets==17.0.1
+    # via langsmith
+wrapt==2.3.0
+    # via smart-open
+xxhash==4.0.1
+    # via langsmith
+zstandard==0.25.0
+    # via langsmith

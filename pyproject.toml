@@ -1,0 +1,81 @@
+# Backend dependency manifest -- the single source of truth for the
+# FastAPI/LangGraph runtime environment (Dockerfile.backend, local dev).
+# The ETL image is deliberately NOT part of this project: it runs a
+# different Python (3.11, for scispacy/nmslib wheel availability -- see
+# Dockerfile.etl's header) and keeps its own requirements-etl.txt, compiled
+# to a fully-pinned requirements-etl.lock.txt by `make lock` / CI.
+#
+# Version RANGES here document intent (minimum supported); the committed
+# uv.lock does the actual pinning of every transitive dependency. This
+# split exists because of a real production outage: `langgraph>=1.0.0` in
+# the old requirements.txt silently floated from 1.0.x to 1.2.11 at image
+# build time, whose ToolNode behavior change crashed every streaming query
+# (fixed in commit 195591f). With uv.lock committed and images built via
+# `uv sync --locked`, upgrades only happen through an explicit, reviewable
+# `uv lock --upgrade-package <name>` diff.
+[project]
+name = "openbio-intel"
+version = "0.1.0"
+description = "Open-source clinical market intelligence for biopharma — LangGraph multi-agent RAG over ClinicalTrials.gov, openFDA, PubMed, SEC filings, and a Neo4j knowledge graph."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+dependencies = [
+    # --- vector store / ingestion ------------------------------------------
+    # qdrant-client stays PINNED at the known-working version -- see the
+    # long rationale that used to live in requirements.txt: the FastEmbed
+    # convenience API this project once needed was removed in 1.19.0; the
+    # raw upsert/query_points/scroll API used today is unaffected, but the
+    # pin is kept out of caution until an upgrade is deliberately tested.
+    "qdrant-client==1.18.0",
+    "requests>=2.32.0",
+    "boto3>=1.34.0",
+    "python-dotenv>=1.0.1",
+    # --- embedding engine (embeddings.py) -----------------------------------
+    "langchain-openai>=0.3.0",
+    "openai>=1.0.0",
+    "tenacity>=8.0.0",
+    # --- agent stack ---------------------------------------------------------
+    "langchain>=1.0.0",
+    "langchain-core>=1.0.0",
+    "langchain-community>=0.3.0",
+    "langgraph>=1.0.0",
+    "langchain-qdrant>=1.0.0",
+    "langchain-anthropic>=1.0.0",
+    "langchain-text-splitters>=1.0.0",
+    "langchain-nvidia-ai-endpoints>=1.4.0",
+    # --- API layer -------------------------------------------------------------
+    "fastapi>=0.115.0",
+    "uvicorn>=0.32.0",
+    # --- exports -----------------------------------------------------------------
+    "openpyxl>=3.1.0",
+    "python-pptx>=1.0.0",
+    # --- auth (currently dormant -- see api.py's AUTH NOTE) ----------------------
+    "python-jose[cryptography]>=3.3.0",
+    "passlib[bcrypt]>=1.7.4",
+    # bcrypt pinned: passlib 1.7.x reads bcrypt.__about__.__version__, which
+    # bcrypt >= 4.1 removed -- 4.0.1 is the last release the pairing works on.
+    "bcrypt==4.0.1",
+    # --- knowledge graph ----------------------------------------------------------
+    "neo4j>=5.0.0",
+    # --- PDF ingestion --------------------------------------------------------------
+    "llama-parse>=0.6.0",
+    "nest-asyncio>=1.6.0",
+    # --- evaluation -------------------------------------------------------------------
+    "ragas>=0.4.0",
+    "datasets>=3.0.0",
+    # --- source-specific fetchers --------------------------------------------------------
+    "biopython>=1.83",
+    "sec-edgar-downloader>=5.0.0",
+    "beautifulsoup4>=4.12.0",
+    "lxml>=5.0.0",
+    "feedparser>=6.0.0",
+    "python-dateutil>=2.9.0",
+]
+
+[tool.uv]
+# This repo is a flat collection of runnable modules (api.py,
+# research_agent.py, ETL scripts), not an installable package -- `uv sync`
+# should install dependencies only, never try to build/install the project
+# itself.
+package = false

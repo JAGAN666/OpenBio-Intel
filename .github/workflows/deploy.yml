@@ -45,6 +45,26 @@ jobs:
       - name: Install lint tools
         run: pip install flake8
 
+      # Hard gate: pyproject.toml and the committed uv.lock must agree, and
+      # the ETL compiled lock must be re-derivable from requirements-etl.txt.
+      # This is what makes dependency upgrades explicit, reviewable diffs
+      # instead of silent image-build-time floats (the langgraph 1.2.11
+      # outage, commit 195591f).
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+
+      - name: Check lockfiles are current
+        run: |
+          uv lock --check
+          # --no-upgrade: reuse the pins already in the committed lock, so
+          # this diff only fires when requirements-etl.txt itself changed
+          # without regenerating the lock -- NOT every time some transitive
+          # dependency publishes a new release.
+          cp requirements-etl.lock.txt /tmp/etl.lock.check
+          uv pip compile requirements-etl.txt -o /tmp/etl.lock.check \
+            --python-version 3.11 --python-platform linux --no-upgrade --no-header --quiet
+          diff -u requirements-etl.lock.txt /tmp/etl.lock.check
+
       # Scoped to E9/F63/F7/F82 -- genuine syntax errors, undefined names,
       # and comparably serious issues -- not full style linting. VERIFIED
       # directly against this exact codebase before choosing this over

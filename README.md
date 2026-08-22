@@ -5,10 +5,10 @@
 **The open-source AI intelligence platform for clinical trials, regulatory approvals, and biopharma landscape analysis.**
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
-[![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue)](requirements.txt)
+[![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue)](pyproject.toml)
 [![Next.js 16](https://img.shields.io/badge/Next.js-16-black?logo=next.js)](frontend/package.json)
-[![FastAPI](https://img.shields.io/badge/FastAPI-0.115%2B-009688?logo=fastapi)](requirements.txt)
-[![LangGraph](https://img.shields.io/badge/LangGraph-1.0%2B-1c3c3c)](requirements.txt)
+[![FastAPI](https://img.shields.io/badge/FastAPI-0.115%2B-009688?logo=fastapi)](pyproject.toml)
+[![LangGraph](https://img.shields.io/badge/LangGraph-1.0%2B-1c3c3c)](pyproject.toml)
 [![Qdrant](https://img.shields.io/badge/Qdrant-vector%20search-dc244c?logo=qdrant)](https://qdrant.tech)
 [![Neo4j](https://img.shields.io/badge/Neo4j-knowledge%20graph-008cc1?logo=neo4j)](https://neo4j.com)
 
@@ -156,8 +156,7 @@ Every variable is documented inline in [`.env.example`](.env.example) — copy i
 docker compose up -d qdrant neo4j
 
 # 2. Python environment
-python3 -m venv .venv
-.venv/bin/pip install -r requirements.txt
+uv sync --locked          # creates .venv from the committed uv.lock (install uv: https://docs.astral.sh/uv/)
 
 # 3. Backend  (http://127.0.0.1:8000 — /docs for OpenAPI, /api/health for readiness)
 .venv/bin/python -m uvicorn api:app --reload --port 8000
