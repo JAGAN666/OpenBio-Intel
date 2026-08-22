@@ -405,11 +405,19 @@ def ensure_openfda_collection(client: QdrantClient, collection_name: str, recrea
         print(f"[index]   dropped existing collection '{collection_name}'")
         exists = False
     if not exists:
+        # Collections in the hybrid rollout (per sparse_embeddings'
+        # registry) get the dense+bm25 schema at creation -- sparse can't
+        # be added later. Others (e.g. openfda_drugsfda) stay dense-only
+        # deliberately until they're brought into the registry.
+        from sparse_embeddings import sparse_text_builder_for, sparse_vector_params
+        sparse_cfg = sparse_vector_params() if sparse_text_builder_for(collection_name) else None
         client.create_collection(
             collection_name=collection_name,
             vectors_config=vector_params(),
+            sparse_vectors_config=sparse_cfg,
         )
-        print(f"[index]   created collection '{collection_name}'")
+        print(f"[index]   created collection '{collection_name}'"
+              + (" (hybrid: dense + bm25)" if sparse_cfg else ""))
     else:
         print(f"[index]   collection '{collection_name}' exists (upserting)")
 

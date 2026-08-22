@@ -71,6 +71,7 @@ dependencies = [
     "lxml>=5.0.0",
     "feedparser>=6.0.0",
     "python-dateutil>=2.9.0",
+    "fastembed>=0.8.0",
 ]
 
 [dependency-groups]

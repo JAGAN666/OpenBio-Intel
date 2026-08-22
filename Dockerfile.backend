@@ -49,7 +49,7 @@ ENV QDRANT_PORT=6333
 # from embeddings.py, and api.py imports get_current_user/CurrentUser from
 # auth.py directly, so without either this image fails at import time,
 # before uvicorn even starts.
-COPY api.py research_agent.py embeddings.py auth.py ./
+COPY api.py research_agent.py embeddings.py sparse_embeddings.py auth.py ./
 
 EXPOSE 8000
 

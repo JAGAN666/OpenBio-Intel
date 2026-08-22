@@ -32,14 +32,22 @@ BASELINE = Path(__file__).parent / "baseline.json"
 
 
 def run(k: int = 20) -> dict:
+    import os
+
     from research_agent import retrieve_trials  # deferred: heavy import chain
+
+    # QDRANT_COLLECTION overrides the collection under test (research_agent's
+    # COLLECTION_NAME is a hardcoded constant, not env-driven) -- used to
+    # measure a rebuilt collection (e.g. clinical_trials_hybrid) BEFORE
+    # swapping it in behind the production alias.
+    collection = os.getenv("QDRANT_COLLECTION")
 
     rows = [json.loads(line) for line in GOLDEN.read_text().splitlines() if line.strip()]
     per_query = []
     started = time.perf_counter()
     for row in rows:
         expected = set(row["expected_nct_ids"])
-        got = retrieve_trials(row["query"], limit=k)
+        got = retrieve_trials(row["query"], limit=k, collection=collection)
         got_ids = [r["NCTId"] for r in got if r.get("NCTId")]
         found = expected.intersection(got_ids)
         per_query.append({

@@ -45,3 +45,8 @@ click==8.4.2
 # en_core_sci_sm (the RxNorm NER model) is NOT on PyPI -- installed from its
 # S3 tarball directly in Dockerfile.etl, matching build_kg.py's own
 # documented bootstrap command.
+
+# BM25 sparse embeddings for hybrid search (sparse_embeddings.py) -- the
+# daily-delta job must write bm25 vectors for new points or lexical search
+# coverage silently decays as the corpus grows past the one-time migration.
+fastembed>=0.8.0

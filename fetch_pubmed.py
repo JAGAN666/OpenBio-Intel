@@ -244,8 +244,16 @@ def ensure_collection(client: QdrantClient, recreate: bool) -> None:
         exists = False
 
     if not exists:
-        client.create_collection(collection_name=COLLECTION_NAME, vectors_config=vector_params())
-        print(f"[index]   created collection '{COLLECTION_NAME}'")
+        # Hybrid schema on creation -- same rationale as
+        # fetch_and_embed_trials.ensure_collection: sparse vectors can't be
+        # added to an existing collection later.
+        from sparse_embeddings import sparse_vector_params
+        client.create_collection(
+            collection_name=COLLECTION_NAME,
+            vectors_config=vector_params(),
+            sparse_vectors_config=sparse_vector_params(),
+        )
+        print(f"[index]   created collection '{COLLECTION_NAME}' (hybrid: dense + bm25)")
     else:
         print(f"[index]   collection '{COLLECTION_NAME}' exists (upserting)")
 

@@ -446,11 +446,18 @@ def ensure_collection(client: QdrantClient, recreate: bool) -> None:
         exists = False
 
     if not exists:
+        # Hybrid schema from day one on fresh installs: sparse vectors
+        # CANNOT be added to an existing collection (verified live against
+        # Qdrant 1.19 -- see migrate_hybrid.py's docstring), so creating
+        # dense-only here would force every new user through that
+        # migration later.
+        from sparse_embeddings import sparse_vector_params
         client.create_collection(
             collection_name=COLLECTION_NAME,
             vectors_config=vector_params(),
+            sparse_vectors_config=sparse_vector_params(),
         )
-        print(f"[index]   created collection '{COLLECTION_NAME}'")
+        print(f"[index]   created collection '{COLLECTION_NAME}' (hybrid: dense + bm25)")
     else:
         print(f"[index]   collection '{COLLECTION_NAME}' exists (upserting)")
 
@@ -494,10 +501,33 @@ def index_records(
 
     vectors = embed_documents([r["document"] for r in records])
 
-    points = [
-        qmodels.PointStruct(id=r["id"], vector=vec, payload=r["payload"])
-        for r, vec in zip(records, vectors)
-    ]
+    # Hybrid-aware point shape: when the target collection declares the
+    # bm25 sparse vector (post-migrate_hybrid.py schema) AND a text builder
+    # is registered for it, every new point gets a locally-computed BM25
+    # vector alongside the dense one -- otherwise daily deltas would write
+    # dense-only points that silently never match lexical queries. Dense-
+    # only collections keep the original plain-vector shape untouched.
+    from sparse_embeddings import (
+        SPARSE_VECTOR_NAME, collection_has_bm25,
+        embed_docs as embed_sparse_docs, sparse_text_builder_for,
+    )
+    sparse_builder = sparse_text_builder_for(collection_name)
+    if sparse_builder and collection_has_bm25(client, collection_name):
+        sparse_vecs = embed_sparse_docs([sparse_builder(r["payload"]) for r in records])
+        points = [
+            qmodels.PointStruct(
+                id=r["id"],
+                vector={"": vec, SPARSE_VECTOR_NAME: sv},
+                payload=r["payload"],
+            )
+            for r, vec, sv in zip(records, vectors, sparse_vecs)
+        ]
+        print(f"[index]   + bm25 sparse vectors ({collection_name} is hybrid)")
+    else:
+        points = [
+            qmodels.PointStruct(id=r["id"], vector=vec, payload=r["payload"])
+            for r, vec in zip(records, vectors)
+        ]
     for i in range(0, len(points), batch):
         client.upsert(collection_name=collection_name, points=points[i:i + batch])
 

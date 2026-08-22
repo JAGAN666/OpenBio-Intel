@@ -77,6 +77,6 @@ ENV NEO4J_USER=neo4j
 # resolution. Not api.py/research_agent.py/parse_pdfs.py/ingest_pipeline.py
 # -- this image never runs the live agent or PDF ingestion, same "only what's
 # actually imported" discipline as Dockerfile.backend.
-COPY embeddings.py fetch_and_embed_trials.py seed_bulk_data.py fetch_daily_updates.py build_kg.py ./
+COPY embeddings.py sparse_embeddings.py fetch_and_embed_trials.py seed_bulk_data.py fetch_daily_updates.py build_kg.py ./
 
 CMD ["python", "fetch_daily_updates.py"]

@@ -593,18 +593,67 @@ def _client() -> QdrantClient:
     return _qdrant
 
 
+# Collections confirmed (at first use, cached) to carry the bm25 sparse
+# vector -- hybrid fusion is attempted once per collection and downgraded
+# to dense-only permanently for that process if the collection predates the
+# hybrid migration (as the AWS deployment does until its snapshot is
+# recovered). Keyed by collection name; values: True (hybrid), False
+# (dense-only fallback).
+_hybrid_capable: dict[str, bool] = {}
+
+
+def _query_hybrid(collection: str, query: str, query_filter, limit: int):
+    """Dense+BM25 RRF fusion via Qdrant's Query API, with a one-time
+    per-collection fallback to dense-only when the collection has no bm25
+    sparse vector. Both prefetch branches over-fetch 3x so RRF has real
+    candidate diversity to fuse rather than two near-identical top-k lists.
+    """
+    dense = embed_query(query)
+    if _hybrid_capable.get(collection, True):
+        try:
+            from sparse_embeddings import SPARSE_VECTOR_NAME, embed_query as sparse_embed
+            hits = _client().query_points(
+                collection_name=collection,
+                prefetch=[
+                    qmodels.Prefetch(query=dense, using="",
+                                     filter=query_filter, limit=limit * 3),
+                    qmodels.Prefetch(query=sparse_embed(query), using=SPARSE_VECTOR_NAME,
+                                     filter=query_filter, limit=limit * 3),
+                ],
+                query=qmodels.FusionQuery(fusion=qmodels.Fusion.RRF),
+                query_filter=query_filter,
+                limit=limit,
+            ).points
+            _hybrid_capable[collection] = True
+            return hits
+        except Exception as exc:  # noqa: BLE001
+            if "Not existing vector name" not in str(exc):
+                raise
+            print(f"[retrieval] {collection}: no bm25 sparse vector -- "
+                  f"dense-only fallback for this process")
+            _hybrid_capable[collection] = False
+
+    return _client().query_points(
+        collection_name=collection,
+        query=dense,
+        query_filter=query_filter,
+        limit=limit,
+    ).points
+
+
 def retrieve_trials(
     query: str,
     limit: int = TRIAL_SEARCH_LIMIT,
     phase: Optional[str] = None,
     collection: Optional[str] = None,
 ) -> list[dict]:
-    """The raw clinical-trials retrieval core -- embed, query Qdrant, shape
-    payloads into plain dicts. Extracted from the search_clinical_trials
-    tool so the eval harness (eval/test_retrieval.py) measures EXACTLY the
-    retrieval path the agent uses -- when this function changes (hybrid
-    sparse+dense fusion, reranking), the tool and the eval numbers change
-    together, which is the whole point of having a baseline.
+    """The raw clinical-trials retrieval core -- embed, query Qdrant (hybrid
+    dense+BM25 RRF where the collection supports it), shape payloads into
+    plain dicts. Extracted from the search_clinical_trials tool so the eval
+    harness (eval/test_retrieval.py) measures EXACTLY the retrieval path the
+    agent uses -- when this function changes (hybrid fusion, reranking), the
+    tool and the eval numbers change together, which is the whole point of
+    having a baseline.
 
     Raises on failure -- the tool wrapper is what converts errors into
     agent-visible observations; the eval harness wants a loud failure.
@@ -617,13 +666,7 @@ def retrieve_trials(
             )]
         )
 
-    query_vector = embed_query(query)
-    hits = _client().query_points(
-        collection_name=collection or COLLECTION_NAME,
-        query=query_vector,
-        query_filter=query_filter,   # payload filter + vector search = hybrid
-        limit=limit,
-    ).points
+    hits = _query_hybrid(collection or COLLECTION_NAME, query, query_filter, limit)
 
     results = []
     for h in hits:
@@ -819,12 +862,7 @@ def search_pubmed_literature(query: str) -> str:
             embedding similarity.
     """
     try:
-        query_vector = embed_query(query)
-        hits = _client().query_points(
-            collection_name=COLLECTION_NAME_PUBMED,
-            query=query_vector,
-            limit=6,
-        ).points
+        hits = _query_hybrid(COLLECTION_NAME_PUBMED, query, None, limit=6)
     except Exception as exc:  # surfaced to the agent as an observation
         return json.dumps({"error": f"Qdrant search failed: {exc}", "has_results": False})
 
