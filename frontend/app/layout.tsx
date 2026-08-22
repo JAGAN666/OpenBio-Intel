@@ -15,7 +15,7 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "Smart Table · medical-rag",
+  title: "OpenBio-Intel — Clinical Market Intelligence",
   description:
     "Life sciences market intelligence — comparative clinical trial grids grounded strictly in the retrieved corpus.",
 };

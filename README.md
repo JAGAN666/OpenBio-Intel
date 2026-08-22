@@ -18,7 +18,11 @@
 
 ---
 
-Ask a question like *"Compare the mechanisms and sponsors of Phase 3 oncology trials"* and get back a cited, structured answer grounded in real clinical trial registries, FDA approval records, peer-reviewed literature, SEC filings, and live corporate disclosures — not a language model's memory. Every claim traces to a real source record; nothing is answered from the model's own parametric knowledge.
+Ask a question like *"Which trials use pembrolizumab, and what are they combining it with?"* and get back a cited, structured answer grounded in real clinical trial registries, FDA approval **and rejection** records, peer-reviewed literature, SEC filings, live corporate disclosures, FAERS safety signals, and Orange/Purple Book exclusivity data — not a language model's memory. Every claim traces to a real source record; nothing is answered from the model's own parametric knowledge.
+
+![Smart Table demo: a pembrolizumab combination question fanning out to 114 parallel extraction workers and returning a cited briefing plus a source-linked comparison grid](docs/assets/smart-table-demo.gif)
+
+*One real query, unedited: hybrid retrieval over 600K+ trials → 114 parallel extraction workers with live progress → a cited executive briefing and a comparison grid where every row links to its primary sources.*
 
 ## Why this matters
 
@@ -104,13 +108,34 @@ flowchart TB
 
 ## Key capabilities
 
-- **Federated retrieval RAG** across ClinicalTrials.gov, openFDA drug approvals, PubMed Central full-text, SEC EDGAR 10-K/8-K filings, corporate press releases + earnings call transcripts, and parsed conference-poster PDFs — seven tools, six Qdrant collections, one agent deciding which apply to a given question.
-- **RxNorm-linked knowledge graph** (Neo4j + scispacy entity resolution) for deterministic drug entity matching — brand name, generic name, and every RxNorm-mapped synonym resolve to the same concept via exact graph traversal, not vector similarity.
+- **Federated retrieval RAG** across ClinicalTrials.gov, openFDA drug approvals, **FDA Complete Response Letters (rejection letters, full text, 2025+)**, PubMed Central full-text, SEC EDGAR 10-K/8-K filings, corporate press releases + earnings call transcripts, parsed conference-poster PDFs, **live FAERS adverse-event safety signals**, and **Orange/Purple Book patent-cliff data** — ten tools, one agent deciding which apply to a given question.
+- **Hybrid search with measured receipts** — BM25 sparse + dense embeddings fused server-side in Qdrant with cross-encoder reranking. On our committed golden set, this took mean recall@20 from **0.44 (dense-only) to 0.61** and cut zero-result queries nearly in half; the eval harness (`eval/`) runs as a regression gate.
+- **Per-row source citations** — every Smart Table row carries clickable provenance chips (registry link added deterministically; PubMed/SEC/news citations only when actually used), through to the Excel export. No number is more than one click from a primary document.
+- **RxNorm-linked knowledge graph** (Neo4j + scispacy entity resolution) for deterministic drug entity matching — brand name, generic name, and every RxNorm-mapped synonym resolve to the same concept via exact graph traversal, with automatic vector fallback for unmapped development codes.
+- **Crash-proof async jobs** — queries run as durable jobs on a Postgres queue with LangGraph checkpointing: a killed worker resumes from its last completed step (measured: 33s resume vs 150s restart), and a refreshed browser tab reattaches to a running query losing nothing.
 - **Interactive Indication Landscape matrices** — a competitive grid of mechanism/target rows against development-phase columns for any therapeutic area, grounded strictly in retrieved trials, FDA records, and literature.
-- **Clinical Catalyst & Readout Tracker** — a chronological timeline of upcoming market-moving events (Phase 3 primary completions, PDUFA dates), backed by live ClinicalTrials.gov date lookups and SEC-disclosed regulatory timelines.
+- **Clinical Catalyst & Readout Tracker** — a chronological timeline of upcoming market-moving events (Phase 3 primary completions, **PDUFA dates and AdComm meetings mined from filings and press releases** — the sources every commercial catalyst calendar is actually built from).
+- **Watchlists with change detection** — watch a drug, company, trial, or topic; one check diffs ClinicalTrials.gov updates and new FDA rejection letters since the last run.
 - **Strict corpus grounding** — the synthesis prompt and schema forbid supplying a drug mechanism from the model's own knowledge. If a source record doesn't describe how a drug works, the row says so rather than filling the gap with a plausible-sounding fabrication.
 - **Automated executive exports** — one-click `.pptx` and `.xlsx` generation from whatever the analyst is already looking at, no re-running the agent.
-- **Provider-swappable LLM layer** — orchestration/routing runs on Anthropic, Kimi (Moonshot), or NVIDIA-hosted models via one `LLM_PROVIDER` switch; high-concurrency structured extraction is pinned to OpenAI gpt-4o regardless, since that Map-stage shape (dozens of parallel calls per query) needs a provider tier that can actually sustain it.
+- **Provider-swappable LLM layer** — orchestration/routing runs on Anthropic, Kimi (Moonshot), or NVIDIA-hosted models via one `LLM_PROVIDER` switch; structured extraction cascades from gpt-4o-mini to gpt-4o with prompt-cache-friendly ordering (verified 2K+ cached tokens per extraction worker).
+
+## Use it from Claude (MCP)
+
+OpenBio-Intel ships an [MCP](https://modelcontextprotocol.io) server (`mcp_server.py`) exposing all ten intelligence tools plus the full Smart Table pipeline to Claude Desktop, Claude Code, or any MCP client — over your own seeded stack:
+
+```json
+{
+  "mcpServers": {
+    "openbio-intel": {
+      "command": "uv",
+      "args": ["run", "--project", "/path/to/OpenBio-Intel", "python", "mcp_server.py"]
+    }
+  }
+}
+```
+
+Unlike API-wrapper servers that give agents raw per-call access to public endpoints, these tools serve a pre-built hybrid-indexed corpus, a knowledge graph, rejection letters, live safety signals, and exclusivity data — the difference between handing an agent a search box and handing it a research department.
 
 ## 5-minute quickstart
 

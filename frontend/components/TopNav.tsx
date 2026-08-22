@@ -59,7 +59,7 @@ export default function TopNav() {
             <Activity className="h-4 w-4" aria-hidden />
           </span>
           <span className="hidden text-sm font-semibold tracking-tight text-slate-900 sm:inline dark:text-slate-100">
-            medical-rag
+            OpenBio-Intel
           </span>
         </Link>
 
