@@ -140,6 +140,7 @@ COLLECTION_NAME_PUBMED = "pubmed_literature"
 # since it reflects what the COMPANY says about its own strategy, not
 # third-party trial data or regulatory status.
 COLLECTION_NAME_SEC = "sec_filings"
+COLLECTION_NAME_CRL = "fda_crls"
 # Sixth federated source (see fetch_news_and_transcripts.py): real-time
 # corporate news -- RSS press releases (FDA, J&J, AbbVie -- Pfizer/Merck do
 # not have a usable public press-release RSS feed, verified live and
@@ -571,6 +572,24 @@ def _is_grounded_sec(query: str, chunks: list[dict]) -> bool:
             c.get("Company") or "", c.get("Ticker") or "", c.get("Text") or "",
         ]).lower()
         if any(tok in haystack for tok in qtok):
+            return True
+    return False
+
+
+def _is_grounded_crl(query: str, chunks: list[dict]) -> bool:
+    """Anti-hallucination gate for the CRL collection -- same principle as
+    _is_grounded_sec: something retrieved must share real vocabulary with
+    the query. Haystack is CompanyName + application numbers + chunk Text."""
+    qtok = _content_tokens(query)
+    if not qtok:
+        return True
+    for c in chunks:
+        haystack = " ".join([
+            c.get("CompanyName") or "",
+            " ".join(c.get("ApplicationNumbers") or []),
+            c.get("Text") or "",
+        ]).lower()
+        if any(t in haystack for t in qtok):
             return True
     return False
 
@@ -1069,6 +1088,59 @@ def search_corporate_news(query: str) -> str:
 
 
 # =============================================================================
+# TOOL -- FDA Complete Response Letters (rejection letters, published 2025+)
+# =============================================================================
+@tool
+def search_fda_crls(query: str) -> str:
+    """Search FDA COMPLETE RESPONSE LETTERS -- the actual rejection letters
+    FDA sends when it refuses to approve a drug application, published
+    since mid-2025 with full text.
+
+    Use this for REGULATORY REJECTION intelligence: why FDA refused a
+    specific drug or company's application (manufacturing/CMC deficiencies,
+    trial-design objections, safety concerns), whether a sponsor has prior
+    CRL history, or what FDA's stated objections were in a therapeutic
+    area. This is the negative-signal complement to search_fda_records
+    (which covers approvals): approvals say what succeeded, these letters
+    say exactly why applications FAILED, in FDA's own words.
+
+    Args:
+        query: Semantic description of what to find, e.g. "CRL for
+            manufacturing deficiencies in a biologics application" or a
+            company/drug/application number (exact tokens like 'NDA 218679'
+            match directly).
+    """
+    try:
+        hits = _query_hybrid(COLLECTION_NAME_CRL, query, None, limit=6)
+    except Exception as exc:  # surfaced to the agent as an observation
+        return json.dumps({"error": f"Qdrant search failed: {exc}", "has_results": False})
+
+    results = []
+    for h in hits:
+        meta = h.payload or {}
+        results.append({
+            "ApplicationNumbers": meta.get("ApplicationNumbers"),
+            "CompanyName": meta.get("CompanyName"),
+            "LetterDate": meta.get("LetterDate"),
+            "LetterType": meta.get("LetterType"),
+            "ApprovalStatus": meta.get("ApprovalStatus"),
+            "FileName": meta.get("FileName"),
+            "ChunkIndex": meta.get("ChunkIndex"),
+            "score": round(float(h.score), 4),
+            "Text": meta.get("Text") or "",
+            "SourceURL": meta.get("SourceURL"),
+        })
+
+    grounded = _is_grounded_crl(query, results)
+
+    return json.dumps(
+        {"query": query, "returned": len(results), "has_results": grounded,
+         "crl_chunks": results},
+        indent=2,
+    )
+
+
+# =============================================================================
 # TOOL -- FAERS safety signals (live openFDA count API, no local collection)
 # =============================================================================
 FAERS_API = "https://api.fda.gov/drug/event.json"
@@ -1328,7 +1400,7 @@ def query_knowledge_graph(entity: str) -> str:
 
 TOOLS = [search_clinical_trials, search_pdf_literature, query_knowledge_graph,
          search_fda_records, search_pubmed_literature, search_sec_filings,
-         search_corporate_news, get_safety_signals]
+         search_corporate_news, get_safety_signals, search_fda_crls]
 
 
 # =============================================================================
@@ -1407,7 +1479,7 @@ class AgentState(TypedDict):
 
 AGENT_SYSTEM = """You are a life sciences market intelligence analyst.
 
-You have EIGHT tools over EIGHT independent sources -- pick whichever
+You have NINE tools over NINE independent sources -- pick whichever
 actually match what the question is asking, not out of habit:
 
 - query_knowledge_graph -- a Neo4j GRAPH of exact drug-entity relationships
@@ -1477,6 +1549,13 @@ actually match what the question is asking, not out of habit:
   post-market safety data -- never answer a safety question from trial
   registry summaries alone when this tool is available. Always relay its
   caveat: reporting data shows association, not causation.
+- search_fda_crls -- FDA COMPLETE RESPONSE LETTERS (the actual rejection
+  letters FDA sends when refusing approval), full text, published since
+  mid-2025. Use it for regulatory-REJECTION intelligence: why FDA refused
+  an application (CMC/manufacturing, trial design, safety), a sponsor's
+  prior CRL history, or FDA's stated objections in an area. Complements
+  search_fda_records (approvals): that says what succeeded, this says why
+  applications FAILED, in FDA's own words.
 
 These are not alternatives to pick one of -- for a holistic pipeline question
 that touches trial design/entity relationships, reported results, regulatory

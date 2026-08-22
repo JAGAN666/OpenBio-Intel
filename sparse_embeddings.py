@@ -100,9 +100,16 @@ def pubmed_sparse_text(payload: dict) -> str:
 # from a point's payload. A collection absent here is dense-only ON PURPOSE
 # (e.g. openfda_drugsfda until it's deliberately migrated) -- ingestion and
 # retrieval both consult this registry so the two can never disagree.
+def crl_sparse_text(payload: dict) -> str:
+    return generic_sparse_text(
+        payload, ["ApplicationNumbers", "CompanyName", "LetterType",
+                  "LetterDate", "Text"])
+
+
 _TEXT_BUILDERS = {
     "clinical_trials": trial_sparse_text,
     "pubmed_literature": pubmed_sparse_text,
+    "fda_crls": crl_sparse_text,
 }
 
 
