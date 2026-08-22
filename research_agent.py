@@ -1465,6 +1465,14 @@ class AgentState(TypedDict):
     # is broadcast the same way; each worker judges whether it's about ITS
     # trial's drug/sponsor.
     retrieved_news: Annotated[list[dict], operator.add]
+    # Federated retrieval, seventh source: chunks from search_fda_crls --
+    # FDA Complete Response Letters. Same broadcast treatment.
+    retrieved_crls: Annotated[list[dict], operator.add]
+    # Live FAERS safety-signal payloads from get_safety_signals -- one dict
+    # per tool call (drug + ranked reaction signals), not chunks. Feeds the
+    # sources-only reducer; not broadcast to Map workers (drug-level data,
+    # not per-trial evidence).
+    retrieved_safety: Annotated[list[dict], operator.add]
     # Per-worker input only. Set exclusively via the Send("extract_trial",
     # {"single_trial": ..., "literature": ..., "fda_records": ..., ...})
     # payload in continue_to_extraction -- no other node reads or writes
@@ -1475,6 +1483,7 @@ class AgentState(TypedDict):
     pubmed_chunks: Optional[list[dict]]
     sec_chunks: Optional[list[dict]]
     news_chunks: Optional[list[dict]]
+    crl_chunks: Optional[list[dict]]
 
 
 AGENT_SYSTEM = """You are a life sciences market intelligence analyst.
@@ -1758,10 +1767,12 @@ No extracted trial rows exist for this turn -- there is no Map stage output
 to work from. You are given the USER QUESTION and whichever federated
 evidence pools were actually retrieved and passed the grounding check this
 turn: PubMed literature excerpts, SEC filing excerpts, conference/FDA-filing
-literature excerpts, FDA approval records, and/or corporate news excerpts
-(press releases and earnings call commentary). Each pool is exactly what
-its own tool returned -- not pre-fused into anything, since there is no
-per-trial worker to do that fusing here.
+literature excerpts, FDA approval records, corporate news excerpts (press
+releases and earnings call commentary), FDA Complete Response Letter
+excerpts (FDA's own rejection letters), and/or FAERS safety signals (a live
+post-market reporting-odds-ratio screen). Each pool is exactly what its own
+tool returned -- not pre-fused into anything, since there is no per-trial
+worker to do that fusing here.
 
 Write the narrative_summary answering the user's question using ONLY the
 provided pools below.
@@ -1775,7 +1786,14 @@ provided pools below.
   whether it's a press release or earnings call (e.g. "per a Merck earnings
   call (Aug 2026), management stated..."), since that distinguishes fast,
   informal real-time commentary from formal, reviewed disclosure like SEC
-  filings.
+  filings. Attribute a Complete Response Letter claim by its
+  ApplicationNumbers/CompanyName and letter date (e.g. "per FDA's CRL to
+  Coherus (Apr 2022)..."), and a FAERS safety claim as "per FAERS
+  disproportionality data" with the reaction's ROR -- always adding that
+  reporting data shows association, not causation.
+- Your reply must be EXACTLY the structured object the tool schema
+  requires (narrative_summary as one prose string): no markdown headings,
+  no bullet lists in place of the schema, no wrapper text.
 - If two pools disagree or address different aspects (e.g. SEC filings
   describe corporate strategy while PubMed describes scientific mechanism),
   present both rather than collapsing them into one claim -- they are
@@ -1988,7 +2006,17 @@ def make_graph(model: str, verbose: bool = True):
     # --- Reduce stage: prose only -- table_data is already fixed by the Map
     # stage, so this call carries far less risk than the old Synthesis call
     # did, but keeps the same validate-or-retry shape for consistency.
-    narrative_llm = llm.with_structured_output(
+    # Pinned to gpt-4o, NOT the provider-routed `llm` -- verified live that
+    # Kimi repeatedly fails this structured call in sources-only mode
+    # (FAERS/CRL JSON payloads): 2-3 consecutive "model did not return the
+    # expected structure" validation errors per query, exhausting the
+    # retry budget and surfacing "unable to produce a validly structured
+    # response" to real users. Same class of decision as extraction_llm:
+    # Kimi handles tool-calling orchestration fine, but evidence-dense
+    # structured synthesis goes to the model that reliably emits schema.
+    narrative_llm = _build_gpt4o_llm(
+        EXTRACTION_TIMEOUT, model_env_var="NARRATIVE_MODEL"
+    ).with_structured_output(
         NarrativeSummary, include_raw=True, method="function_calling"
     )
 
@@ -2083,6 +2111,8 @@ def make_graph(model: str, verbose: bool = True):
         new_pubmed: list[dict] = []
         new_sec: list[dict] = []
         new_news: list[dict] = []
+        new_crls: list[dict] = []
+        new_safety: list[dict] = []
         for m in out["messages"]:
             if verbose:
                 _trace_tool_result(m)
@@ -2101,6 +2131,12 @@ def make_graph(model: str, verbose: bool = True):
                 new_pubmed.extend(payload.get("pubmed_chunks", []))
                 new_sec.extend(payload.get("sec_chunks", []))
                 new_news.extend(payload.get("news_chunks", []))
+                new_crls.extend(payload.get("crl_chunks", []))
+                if payload.get("signals") is not None:
+                    new_safety.append({k: payload[k] for k in
+                                       ("drug", "faers_reports_for_drug",
+                                        "signals", "interpretation")
+                                       if k in payload})
             except (json.JSONDecodeError, TypeError, AttributeError):
                 pass
 
@@ -2119,7 +2155,9 @@ def make_graph(model: str, verbose: bool = True):
                 "retrieved_fda": new_fda,
                 "retrieved_pubmed": new_pubmed,
                 "retrieved_sec": new_sec,
-                "retrieved_news": new_news}
+                "retrieved_news": new_news,
+                "retrieved_crls": new_crls,
+                "retrieved_safety": new_safety}
 
     # --- node: NoResultsFallback (deterministic, no LLM call) ---------------
     def no_results_fallback_node(state: AgentState) -> dict:
@@ -2138,6 +2176,7 @@ def make_graph(model: str, verbose: bool = True):
         pubmed_chunks = state.get("pubmed_chunks") or []
         sec_chunks = state.get("sec_chunks") or []
         news_chunks = state.get("news_chunks") or []
+        crl_chunks = state.get("crl_chunks") or []
         nct_id = trial.get("NCTId", "?")
         started = time.time()
         if verbose:
@@ -2210,6 +2249,17 @@ def make_graph(model: str, verbose: bool = True):
             )
         else:
             prompt += "CORPORATE NEWS EXCERPTS: (none retrieved this run)\n\n"
+
+        if crl_chunks:
+            prompt += (
+                f"FDA COMPLETE RESPONSE LETTER EXCERPTS (shared pool from "
+                f"search_fda_crls -- FDA's own rejection letters; fuse in ONLY "
+                f"what genuinely matches the trial's drug(s) or sponsor, per "
+                f"the system instructions):\n"
+                f"{json.dumps(crl_chunks, indent=2)}\n\n"
+            )
+        else:
+            prompt += "FDA COMPLETE RESPONSE LETTER EXCERPTS: (none retrieved this run)\n\n"
 
         prompt += (
             f"TRIAL RECORD (structured registry -- the primary source for "
@@ -2329,11 +2379,13 @@ def make_graph(model: str, verbose: bool = True):
         # this branch can answer from them directly instead of assuming
         # "no trial" means "no evidence at all."
         pools = _deduped_pools(state) if not rows else None
-        sources_only = bool(pools) and any(
+        safety_payloads = state.get("retrieved_safety") or []
+        sources_only = (bool(pools) and any(
             pools[k] for k in (
-                "literature", "fda_records", "pubmed_chunks", "sec_chunks", "news_chunks",
+                "literature", "fda_records", "pubmed_chunks", "sec_chunks",
+                "news_chunks", "crl_chunks",
             )
-        )
+        )) or (not rows and bool(safety_payloads))
 
         if verbose:
             label = f"  (retry {retries}/{MAX_SYNTHESIS_RETRIES})" if retries else ""
@@ -2370,6 +2422,15 @@ def make_graph(model: str, verbose: bool = True):
                 prompt += (f"CORPORATE NEWS EXCERPTS (search_corporate_news -- press "
                           f"releases and earnings call commentary):\n"
                           f"{json.dumps(pools['news_chunks'], indent=2)}\n\n")
+            if pools["crl_chunks"]:
+                prompt += (f"FDA COMPLETE RESPONSE LETTER EXCERPTS "
+                          f"(search_fda_crls -- FDA's own rejection letters):\n"
+                          f"{json.dumps(pools['crl_chunks'], indent=2)}\n\n")
+            if safety_payloads:
+                prompt += (f"FAERS SAFETY SIGNALS (get_safety_signals -- live "
+                          f"post-market reporting-odds-ratio screen; association, "
+                          f"not causation):\n"
+                          f"{json.dumps(safety_payloads, indent=2)}\n\n")
             system_prompt = SOURCES_ONLY_REDUCER_SYSTEM
         else:
             prompt = (
@@ -2501,9 +2562,18 @@ def make_graph(model: str, verbose: bool = True):
                 seen_news.add(key)
                 news_chunks.append(c)
 
+        seen_crl: set[tuple] = set()
+        crl_chunks: list[dict] = []
+        for c in state.get("retrieved_crls", []):
+            key = (c.get("FileName"), c.get("ChunkIndex"))
+            if key not in seen_crl:
+                seen_crl.add(key)
+                crl_chunks.append(c)
+
         return {"trials": trials, "literature": literature,
                 "fda_records": fda_records, "pubmed_chunks": pubmed_chunks,
-                "sec_chunks": sec_chunks, "news_chunks": news_chunks}
+                "sec_chunks": sec_chunks, "news_chunks": news_chunks,
+                "crl_chunks": crl_chunks}
 
     def continue_to_extraction(state: AgentState):
         """Conditional edge from `tools` -- the Mapper.
@@ -2564,7 +2634,8 @@ def make_graph(model: str, verbose: bool = True):
                       "fda_records": pools["fda_records"],
                       "pubmed_chunks": pools["pubmed_chunks"],
                       "sec_chunks": pools["sec_chunks"],
-                      "news_chunks": pools["news_chunks"]})
+                      "news_chunks": pools["news_chunks"],
+                      "crl_chunks": pools["crl_chunks"]})
                 for t in trials]
 
     def route_after_synthesis(state: AgentState) -> str:
@@ -4023,7 +4094,7 @@ def main() -> int:
          "synthesis_retries": 0, "synthesis_error": None,
          "retrieved_trials": [], "extracted_rows": [], "retrieved_literature": [],
          "retrieved_fda": [], "retrieved_pubmed": [], "retrieved_sec": [],
-         "retrieved_news": []},
+         "retrieved_news": [], "retrieved_crls": [], "retrieved_safety": []},
         config={"recursion_limit": 25},
     )
 
