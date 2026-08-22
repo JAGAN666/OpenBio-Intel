@@ -73,6 +73,19 @@ dependencies = [
     "python-dateutil>=2.9.0",
 ]
 
+[dependency-groups]
+# Dev-only tooling -- NOT installed into images (Dockerfile.backend uses
+# `uv sync --no-dev`). pytest currently drives eval/test_retrieval.py, the
+# retrieval-regression gate.
+dev = [
+    "pytest>=8.0.0",
+]
+
+[tool.pytest.ini_options]
+# Keep collection scoped -- this repo has a frontend/ tree and large data
+# directories pytest should never wander into.
+testpaths = ["eval"]
+
 [tool.uv]
 # This repo is a flat collection of runnable modules (api.py,
 # research_agent.py, ETL scripts), not an installable package -- `uv sync`

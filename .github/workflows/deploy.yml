@@ -65,6 +65,19 @@ jobs:
             --python-version 3.11 --python-platform linux --no-upgrade --no-header --quiet
           diff -u requirements-etl.lock.txt /tmp/etl.lock.check
 
+      # eval/test_retrieval.py needs the seeded 597K-point Qdrant corpus and
+      # SKIPS itself cleanly when it's unreachable (as it is on a bare
+      # runner) -- the step still matters: it installs the locked env and
+      # will run any future corpus-independent tests for real, and the
+      # retrieval gate activates automatically once a CI eval corpus
+      # (planned: subset snapshot restored into a qdrant service container)
+      # is wired up after the hybrid-search migration settles the collection
+      # schema.
+      - name: Run test suite
+        run: |
+          uv sync --locked
+          uv run pytest -q
+
       # Scoped to E9/F63/F7/F82 -- genuine syntax errors, undefined names,
       # and comparably serious issues -- not full style linting. VERIFIED
       # directly against this exact codebase before choosing this over

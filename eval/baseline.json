@@ -1,0 +1,361 @@
+{
+  "k": 20,
+  "queries": 50,
+  "mean_recall": 0.4408,
+  "median_recall": 0.3333,
+  "hit_rate": 0.74,
+  "zero_recall_queries": 13,
+  "elapsed_s": 74.8,
+  "per_query": [
+    {
+      "query": "What studies test SABER-Bupivacaine Treatment 2a as a treatment for Postoperative Pain?",
+      "expected": 2,
+      "found": 2,
+      "recall": 1.0,
+      "hit": true
+    },
+    {
+      "query": "What studies test Anlotinib combined Docetaxel as a treatment for Non-small Cell Lung Cancer?",
+      "expected": 2,
+      "found": 2,
+      "recall": 1.0,
+      "hit": true
+    },
+    {
+      "query": "Which clinical trials are studying AMG 876 for Diabetes Mellitus?",
+      "expected": 2,
+      "found": 2,
+      "recall": 1.0,
+      "hit": true
+    },
+    {
+      "query": "trials evaluating Carfilzomib in patients with Refractory Multiple Myeloma",
+      "expected": 15,
+      "found": 1,
+      "recall": 0.06666666666666667,
+      "hit": true
+    },
+    {
+      "query": "What studies test laboratory biomarker analysis as a treatment for Adenocarcinoma of the Esophagus?",
+      "expected": 6,
+      "found": 0,
+      "recall": 0.0,
+      "hit": false
+    },
+    {
+      "query": "Which clinical trials are studying D5W Placebo for Chemotherapy-induced Neutropenia?",
+      "expected": 2,
+      "found": 2,
+      "recall": 1.0,
+      "hit": true
+    },
+    {
+      "query": "trials evaluating Azilsartan medoxomil and chlorthalidone in patients with Hypertension",
+      "expected": 2,
+      "found": 2,
+      "recall": 1.0,
+      "hit": true
+    },
+    {
+      "query": "Which clinical trials are studying Paclitaxel for Stage III Ovarian Cancer AJCC v6 and v7?",
+      "expected": 5,
+      "found": 0,
+      "recall": 0.0,
+      "hit": false
+    },
+    {
+      "query": "trials evaluating Questionnaire Administration in patients with Malignant Head and Neck Neoplasm",
+      "expected": 9,
+      "found": 0,
+      "recall": 0.0,
+      "hit": false
+    },
+    {
+      "query": "trials evaluating Filgrastim in patients with HIV Infections",
+      "expected": 10,
+      "found": 4,
+      "recall": 0.4,
+      "hit": true
+    },
+    {
+      "query": "What studies test Cangrelor as a treatment for Coronary Artery Disease?",
+      "expected": 6,
+      "found": 6,
+      "recall": 1.0,
+      "hit": true
+    },
+    {
+      "query": "trials evaluating NDURE in patients with Squamous Cell Carcinoma of Head and Neck",
+      "expected": 2,
+      "found": 2,
+      "recall": 1.0,
+      "hit": true
+    },
+    {
+      "query": "What studies test questionnaire administration as a treatment for Cognitive/Functional Effects?",
+      "expected": 11,
+      "found": 1,
+      "recall": 0.09090909090909091,
+      "hit": true
+    },
+    {
+      "query": "Which clinical trials are studying Fludarabine for Acute Myeloid Leukemia (AML)?",
+      "expected": 14,
+      "found": 0,
+      "recall": 0.0,
+      "hit": false
+    },
+    {
+      "query": "trials evaluating Allogeneic Hematopoietic Stem Cell Transplantation in patients with Accelerated Phase Chronic Myelogenous Leukemia, BCR-ABL1 Positive",
+      "expected": 6,
+      "found": 2,
+      "recall": 0.3333333333333333,
+      "hit": true
+    },
+    {
+      "query": "trials evaluating Sono-guided injection in patients with Femoral Nerve Block",
+      "expected": 4,
+      "found": 4,
+      "recall": 1.0,
+      "hit": true
+    },
+    {
+      "query": "What studies test Aromatase Inhibitor as a treatment for Breast Cancer?",
+      "expected": 11,
+      "found": 1,
+      "recall": 0.09090909090909091,
+      "hit": true
+    },
+    {
+      "query": "trials evaluating pirfenidone in patients with Idiopathic Pulmonary Fibrosis",
+      "expected": 3,
+      "found": 1,
+      "recall": 0.3333333333333333,
+      "hit": true
+    },
+    {
+      "query": "Which clinical trials are studying JYB1904 for Chronic Spontaneous Urticaria?",
+      "expected": 2,
+      "found": 2,
+      "recall": 1.0,
+      "hit": true
+    },
+    {
+      "query": "trials evaluating Carboplatin in patients with Squamous Cell Carcinoma of Head and Neck",
+      "expected": 7,
+      "found": 0,
+      "recall": 0.0,
+      "hit": false
+    },
+    {
+      "query": "trials evaluating Biospecimen Collection in patients with Human Papillomavirus Infection",
+      "expected": 7,
+      "found": 6,
+      "recall": 0.8571428571428571,
+      "hit": true
+    },
+    {
+      "query": "Which clinical trials are studying Dihydroartemisinin-piperaquine for Malaria,Falciparum?",
+      "expected": 4,
+      "found": 1,
+      "recall": 0.25,
+      "hit": true
+    },
+    {
+      "query": "Which clinical trials are studying Macintosh laryngoscope for Laryngoscopy?",
+      "expected": 3,
+      "found": 1,
+      "recall": 0.3333333333333333,
+      "hit": true
+    },
+    {
+      "query": "trials evaluating Quality-of-Life Assessment in patients with Recurrent Plasma Cell Myeloma",
+      "expected": 10,
+      "found": 0,
+      "recall": 0.0,
+      "hit": false
+    },
+    {
+      "query": "Which clinical trials are studying methotrexate for Brain and Central Nervous System Tumors?",
+      "expected": 15,
+      "found": 5,
+      "recall": 0.3333333333333333,
+      "hit": true
+    },
+    {
+      "query": "What is Inhaled budesonide being tested for?",
+      "expected": 5,
+      "found": 1,
+      "recall": 0.2,
+      "hit": true
+    },
+    {
+      "query": "What is asfotase alfa being tested for?",
+      "expected": 9,
+      "found": 7,
+      "recall": 0.7777777777777778,
+      "hit": true
+    },
+    {
+      "query": "clinical studies involving the drug Robotic surgery",
+      "expected": 14,
+      "found": 3,
+      "recall": 0.21428571428571427,
+      "hit": true
+    },
+    {
+      "query": "Which trials use VB-201?",
+      "expected": 2,
+      "found": 1,
+      "recall": 0.5,
+      "hit": true
+    },
+    {
+      "query": "Which trials use Olodaterol?",
+      "expected": 13,
+      "found": 5,
+      "recall": 0.38461538461538464,
+      "hit": true
+    },
+    {
+      "query": "Which trials use ABX464?",
+      "expected": 15,
+      "found": 13,
+      "recall": 0.8666666666666667,
+      "hit": true
+    },
+    {
+      "query": "clinical studies involving the drug Healthy lifestyle",
+      "expected": 9,
+      "found": 0,
+      "recall": 0.0,
+      "hit": false
+    },
+    {
+      "query": "Which trials use Triclosan, fluoride?",
+      "expected": 5,
+      "found": 3,
+      "recall": 0.6,
+      "hit": true
+    },
+    {
+      "query": "Which trials use Advice?",
+      "expected": 7,
+      "found": 0,
+      "recall": 0.0,
+      "hit": false
+    },
+    {
+      "query": "Which trials use Umbilical Cord Milking?",
+      "expected": 15,
+      "found": 9,
+      "recall": 0.6,
+      "hit": true
+    },
+    {
+      "query": "clinical studies involving the drug systemic therapy",
+      "expected": 6,
+      "found": 0,
+      "recall": 0.0,
+      "hit": false
+    },
+    {
+      "query": "Which trials use nimotuzumab?",
+      "expected": 15,
+      "found": 2,
+      "recall": 0.13333333333333333,
+      "hit": true
+    },
+    {
+      "query": "Which trials use Conventional approach?",
+      "expected": 5,
+      "found": 0,
+      "recall": 0.0,
+      "hit": false
+    },
+    {
+      "query": "What is Depomedrol being tested for?",
+      "expected": 3,
+      "found": 2,
+      "recall": 0.6666666666666666,
+      "hit": true
+    },
+    {
+      "query": "What is Tixel 2 being tested for?",
+      "expected": 2,
+      "found": 1,
+      "recall": 0.5,
+      "hit": true
+    },
+    {
+      "query": "What is tegafur-gimeracil-oteracil potassium being tested for?",
+      "expected": 10,
+      "found": 2,
+      "recall": 0.2,
+      "hit": true
+    },
+    {
+      "query": "Which trials use Sodium chloride (placebo)?",
+      "expected": 6,
+      "found": 0,
+      "recall": 0.0,
+      "hit": false
+    },
+    {
+      "query": "clinical studies involving the drug Steroid Drug",
+      "expected": 10,
+      "found": 0,
+      "recall": 0.0,
+      "hit": false
+    },
+    {
+      "query": "What is Telavancin being tested for?",
+      "expected": 12,
+      "found": 12,
+      "recall": 1.0,
+      "hit": true
+    },
+    {
+      "query": "What is Messaging being tested for?",
+      "expected": 5,
+      "found": 0,
+      "recall": 0.0,
+      "hit": false
+    },
+    {
+      "query": "Which trials use Meningococcal (Groups A, C, Y and W 135) Polysaccharide Diphtheria Toxoid Conjugate Vaccine?",
+      "expected": 5,
+      "found": 1,
+      "recall": 0.2,
+      "hit": true
+    },
+    {
+      "query": "What is Abdominal Massage being tested for?",
+      "expected": 12,
+      "found": 7,
+      "recall": 0.5833333333333334,
+      "hit": true
+    },
+    {
+      "query": "clinical studies involving the drug REGN475/SAR164877",
+      "expected": 2,
+      "found": 2,
+      "recall": 1.0,
+      "hit": true
+    },
+    {
+      "query": "What is Esketamine 56 mg being tested for?",
+      "expected": 7,
+      "found": 6,
+      "recall": 0.8571428571428571,
+      "hit": true
+    },
+    {
+      "query": "What is BBO-10203 being tested for?",
+      "expected": 3,
+      "found": 2,
+      "recall": 0.6666666666666666,
+      "hit": true
+    }
+  ]
+}

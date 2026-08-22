@@ -593,6 +593,57 @@ def _client() -> QdrantClient:
     return _qdrant
 
 
+def retrieve_trials(
+    query: str,
+    limit: int = TRIAL_SEARCH_LIMIT,
+    phase: Optional[str] = None,
+    collection: Optional[str] = None,
+) -> list[dict]:
+    """The raw clinical-trials retrieval core -- embed, query Qdrant, shape
+    payloads into plain dicts. Extracted from the search_clinical_trials
+    tool so the eval harness (eval/test_retrieval.py) measures EXACTLY the
+    retrieval path the agent uses -- when this function changes (hybrid
+    sparse+dense fusion, reranking), the tool and the eval numbers change
+    together, which is the whole point of having a baseline.
+
+    Raises on failure -- the tool wrapper is what converts errors into
+    agent-visible observations; the eval harness wants a loud failure.
+    """
+    query_filter = None
+    if phase:
+        query_filter = qmodels.Filter(
+            must=[qmodels.FieldCondition(
+                key="Phase", match=qmodels.MatchValue(value=phase)
+            )]
+        )
+
+    query_vector = embed_query(query)
+    hits = _client().query_points(
+        collection_name=collection or COLLECTION_NAME,
+        query=query_vector,
+        query_filter=query_filter,   # payload filter + vector search = hybrid
+        limit=limit,
+    ).points
+
+    results = []
+    for h in hits:
+        meta = h.payload or {}
+        results.append({
+            "NCTId": meta.get("NCTId"),
+            "BriefTitle": meta.get("BriefTitle"),
+            "Phase": meta.get("Phase"),
+            "OverallStatus": meta.get("OverallStatus"),
+            "LeadSponsorName": meta.get("LeadSponsorName"),
+            # --- structured pharmacology (payload enrichment) -------------
+            "studyType": meta.get("studyType"),
+            "conditions": meta.get("conditions"),
+            "interventions": meta.get("interventions"),
+            "score": round(float(h.score), 4),
+            "BriefSummary": (meta.get("BriefSummary") or "")[:1200],
+        })
+    return results
+
+
 @tool
 def search_clinical_trials(query: str, phase_filter: Optional[str] = None) -> str:
     """Search the internal clinical-trials vector database by meaning.
@@ -614,41 +665,10 @@ def search_clinical_trials(query: str, phase_filter: Optional[str] = None) -> st
     """
     phase = _normalise_phase(phase_filter)
 
-    query_filter = None
-    if phase:
-        query_filter = qmodels.Filter(
-            must=[qmodels.FieldCondition(
-                key="Phase", match=qmodels.MatchValue(value=phase)
-            )]
-        )
-
     try:
-        query_vector = embed_query(query)
-        hits = _client().query_points(
-            collection_name=COLLECTION_NAME,
-            query=query_vector,
-            query_filter=query_filter,   # payload filter + vector search = hybrid
-            limit=TRIAL_SEARCH_LIMIT,
-        ).points
+        results = retrieve_trials(query, limit=TRIAL_SEARCH_LIMIT, phase=phase)
     except Exception as exc:  # surfaced to the agent as an observation
         return json.dumps({"error": f"Qdrant search failed: {exc}", "has_results": False})
-
-    results = []
-    for h in hits:
-        meta = h.payload or {}
-        results.append({
-            "NCTId": meta.get("NCTId"),
-            "BriefTitle": meta.get("BriefTitle"),
-            "Phase": meta.get("Phase"),
-            "OverallStatus": meta.get("OverallStatus"),
-            "LeadSponsorName": meta.get("LeadSponsorName"),
-            # --- structured pharmacology (payload enrichment) -------------
-            "studyType": meta.get("studyType"),
-            "conditions": meta.get("conditions"),
-            "interventions": meta.get("interventions"),
-            "score": round(float(h.score), 4),
-            "BriefSummary": (meta.get("BriefSummary") or "")[:1200],
-        })
 
     # has_results is NOT `len(results) > 0` -- Qdrant's kNN search always
     # returns up to `limit` nearest points, even for a query about something
