@@ -1709,6 +1709,24 @@ def make_graph(model: str, verbose: bool = True):
         EXTRACTION_TIMEOUT, model_env_var="EXTRACTION_MODEL"
     ).with_structured_output(TrialRow)
 
+    # --- extraction cost cascade ------------------------------------------
+    # Most trial records are formulaic registry text a mini-tier model
+    # extracts correctly; only ambiguous rows need full gpt-4o. Each Map
+    # worker therefore tries EXTRACTION_MODEL_MINI (default gpt-4o-mini)
+    # first, validates the structured result deterministically
+    # (_cascade_acceptable below -- schema parse + critical fields), and
+    # escalates to the pinned gpt-4o ONLY on failure. Beyond the ~15x price
+    # gap, the mini tier has its own separate TPM budget, so most workers
+    # no longer queue against the 30K-TPM gpt-4o ceiling that made large
+    # extractions take 5-10 minutes (see EXTRACTION_CONCURRENCY).
+    # include_raw=True so a schema-parse failure surfaces as data
+    # (parsing_error) to trigger escalation instead of raising, and so
+    # usage metadata (cached-token counts) is loggable.
+    extraction_llm_mini = _build_gpt4o_llm(
+        EXTRACTION_TIMEOUT, model_env_var="EXTRACTION_MODEL_MINI",
+        default_model="gpt-4o-mini",
+    ).with_structured_output(TrialRow, include_raw=True)
+
     # --- Reduce stage: prose only -- table_data is already fixed by the Map
     # stage, so this call carries far less risk than the old Synthesis call
     # did, but keeps the same validate-or-retry shape for consistency.
@@ -1873,15 +1891,24 @@ def make_graph(model: str, verbose: bool = True):
                   f"{len(news_chunks)} corporate news excerpt(s) available)"
                   f"\n{'─' * 78}")
 
-        prompt = (
-            f"TRIAL RECORD (structured registry -- the primary source for "
-            f"this row):\n{json.dumps(trial, indent=2)}\n\n"
-        )
+        # PROMPT ORDERING IS A COST FEATURE, not a readability choice: the
+        # five evidence pools below are IDENTICAL across every Map worker
+        # in a run (they're the shared retrieval state), while the trial
+        # record is unique per worker. Shared-invariant content first +
+        # per-worker content last means [system prompt + all pools] forms
+        # one long identical prefix across the whole fan-out, which OpenAI
+        # prompt caching serves at half price after the first worker warms
+        # it (automatic, >=1024-token prefixes; EXTRACTION_SYSTEM alone is
+        # ~1.9K tokens). The previous ordering -- trial record FIRST --
+        # made every worker's prompt diverge at token ~1 and guaranteed a
+        # 0% cache hit rate on exactly the fan-out that dominates spend.
+        prompt = ""
         if literature:
             prompt += (
                 f"LITERATURE EXCERPTS (shared pool from search_pdf_literature "
-                f"-- fuse in ONLY what genuinely matches THIS trial, per the "
-                f"system instructions):\n{json.dumps(literature, indent=2)}\n\n"
+                f"-- fuse in ONLY what genuinely matches the trial record at "
+                f"the END of this message, per the system instructions):\n"
+                f"{json.dumps(literature, indent=2)}\n\n"
             )
         else:
             prompt += "LITERATURE EXCERPTS: (none retrieved this run)\n\n"
@@ -1889,7 +1916,7 @@ def make_graph(model: str, verbose: bool = True):
         if fda_records:
             prompt += (
                 f"FDA RECORDS (shared pool from search_fda_records -- fuse in "
-                f"ONLY what genuinely matches THIS trial's drug(s), per the "
+                f"ONLY what genuinely matches the trial's drug(s), per the "
                 f"system instructions):\n{json.dumps(fda_records, indent=2)}\n\n"
             )
         else:
@@ -1899,7 +1926,7 @@ def make_graph(model: str, verbose: bool = True):
             prompt += (
                 f"PUBMED LITERATURE EXCERPTS (shared pool from "
                 f"search_pubmed_literature -- fuse in ONLY what genuinely "
-                f"matches THIS trial, per the system instructions):\n"
+                f"matches the trial, per the system instructions):\n"
                 f"{json.dumps(pubmed_chunks, indent=2)}\n\n"
             )
         else:
@@ -1908,7 +1935,7 @@ def make_graph(model: str, verbose: bool = True):
         if sec_chunks:
             prompt += (
                 f"SEC FILING EXCERPTS (shared pool from search_sec_filings -- "
-                f"fuse in ONLY what genuinely matches THIS trial's drug(s) or "
+                f"fuse in ONLY what genuinely matches the trial's drug(s) or "
                 f"sponsor, per the system instructions):\n"
                 f"{json.dumps(sec_chunks, indent=2)}\n\n"
             )
@@ -1919,12 +1946,17 @@ def make_graph(model: str, verbose: bool = True):
             prompt += (
                 f"CORPORATE NEWS EXCERPTS (shared pool from "
                 f"search_corporate_news -- press releases and earnings call "
-                f"commentary; fuse in ONLY what genuinely matches THIS "
+                f"commentary; fuse in ONLY what genuinely matches the "
                 f"trial's drug(s) or sponsor, per the system instructions):\n"
-                f"{json.dumps(news_chunks, indent=2)}"
+                f"{json.dumps(news_chunks, indent=2)}\n\n"
             )
         else:
-            prompt += "CORPORATE NEWS EXCERPTS: (none retrieved this run)"
+            prompt += "CORPORATE NEWS EXCERPTS: (none retrieved this run)\n\n"
+
+        prompt += (
+            f"TRIAL RECORD (structured registry -- the primary source for "
+            f"this row):\n{json.dumps(trial, indent=2)}"
+        )
 
         # _extraction_semaphore + a generous retry budget, not a single quick
         # retry -- at up to TRIAL_SEARCH_LIMIT=50 concurrent workers, the
@@ -1938,41 +1970,78 @@ def make_graph(model: str, verbose: bool = True):
         # non-transient exception -- one flaky row must not sink the batch,
         # and retrying a non-transient error would just waste the same
         # failure again.
+        messages = [SystemMessage(content=EXTRACTION_SYSTEM),
+                    HumanMessage(content=prompt)]
+
+        def _cascade_acceptable(candidate: TrialRow | None) -> bool:
+            """Deterministic accept gate for the mini tier: the schema
+            parsed AND the critical identity fields are present and honest
+            (nct_id must match the record this worker was given -- a
+            mismatched id is the classic small-model copy error and would
+            poison the table)."""
+            return (candidate is not None
+                    and (candidate.nct_id or "").strip() == nct_id
+                    and bool((candidate.phase or "").strip())
+                    and bool((candidate.sponsor or "").strip()))
+
+        # --- tier 1: mini model, outside the gpt-4o semaphore -----------
+        # The semaphore exists purely to ration the 30K-TPM gpt-4o budget;
+        # mini has its own (much larger) budget, so serializing mini calls
+        # behind it would rebuild the very queue the cascade removes.
         row: TrialRow | None = None
-        MAX_EXTRACTION_ATTEMPTS = 5
-        with _extraction_semaphore:
-            for attempt in range(MAX_EXTRACTION_ATTEMPTS):
-                try:
-                    row = extraction_llm.invoke([
-                        SystemMessage(content=EXTRACTION_SYSTEM),
-                        HumanMessage(content=prompt),
-                    ])
-                    break
-                except (openai.RateLimitError, openai.APITimeoutError,
-                        openai.APIConnectionError, openai.InternalServerError) as exc:
-                    if attempt == MAX_EXTRACTION_ATTEMPTS - 1:
+        tier = "mini"
+        try:
+            out = extraction_llm_mini.invoke(messages)
+            parsed = out.get("parsed")
+            if _cascade_acceptable(parsed):
+                row = parsed
+                if verbose:
+                    usage = getattr(out.get("raw"), "usage_metadata", None) or {}
+                    cached = (usage.get("input_token_details") or {}).get("cache_read", 0)
+                    print(f"  ↳ {nct_id}: mini tier OK "
+                          f"(cached input tokens: {cached})")
+            elif verbose:
+                why = out.get("parsing_error") or "critical-field check failed"
+                print(f"  ↳ {nct_id}: mini tier rejected ({why}) — escalating to gpt-4o")
+        except Exception as exc:  # noqa: BLE001 -- any mini failure just escalates
+            if verbose:
+                print(f"  ↳ {nct_id}: mini tier errored ({exc}) — escalating to gpt-4o")
+
+        # --- tier 2: pinned gpt-4o, semaphore + adaptive retry (unchanged
+        # from the pre-cascade behavior; see EXTRACTION_CONCURRENCY) ------
+        if row is None:
+            tier = "gpt-4o"
+            MAX_EXTRACTION_ATTEMPTS = 5
+            with _extraction_semaphore:
+                for attempt in range(MAX_EXTRACTION_ATTEMPTS):
+                    try:
+                        row = extraction_llm.invoke(messages)
+                        break
+                    except (openai.RateLimitError, openai.APITimeoutError,
+                            openai.APIConnectionError, openai.InternalServerError) as exc:
+                        if attempt == MAX_EXTRACTION_ATTEMPTS - 1:
+                            if verbose:
+                                print(f"  ✗ extraction failed for {nct_id} "
+                                      f"({time.time() - started:.1f}s) after "
+                                      f"{MAX_EXTRACTION_ATTEMPTS} attempts: {exc} — dropping this row")
+                            return {"extracted_rows": []}
+                        m = _RETRY_AFTER_RE.search(str(exc))
+                        wait = min(float(m.group(1)), 30.0) + 1.0 if m else 5.0 * (attempt + 1)
+                        if verbose:
+                            print(f"  ⚠ transient error for {nct_id} "
+                                  f"(attempt {attempt + 1}/{MAX_EXTRACTION_ATTEMPTS}), "
+                                  f"retrying in {wait:.1f}s: {exc}")
+                        time.sleep(wait)
+                    except Exception as exc:  # one flaky worker must not sink the batch
                         if verbose:
                             print(f"  ✗ extraction failed for {nct_id} "
-                                  f"({time.time() - started:.1f}s) after "
-                                  f"{MAX_EXTRACTION_ATTEMPTS} attempts: {exc} — dropping this row")
+                                  f"({time.time() - started:.1f}s): {exc} — dropping this row")
                         return {"extracted_rows": []}
-                    m = _RETRY_AFTER_RE.search(str(exc))
-                    wait = min(float(m.group(1)), 30.0) + 1.0 if m else 5.0 * (attempt + 1)
-                    if verbose:
-                        print(f"  ⚠ transient error for {nct_id} "
-                              f"(attempt {attempt + 1}/{MAX_EXTRACTION_ATTEMPTS}), "
-                              f"retrying in {wait:.1f}s: {exc}")
-                    time.sleep(wait)
-                except Exception as exc:  # one flaky worker must not sink the batch
-                    if verbose:
-                        print(f"  ✗ extraction failed for {nct_id} "
-                              f"({time.time() - started:.1f}s): {exc} — dropping this row")
-                    return {"extracted_rows": []}
 
         if verbose:
             print(f"  ✓ {row.nct_id}  phase={row.phase!r}  "
                   f"mechanism_described={row.mechanism_described}  "
-                  f"({time.time() - started:.1f}s)")
+                  f"tier={tier}  ({time.time() - started:.1f}s)")
         return {"extracted_rows": [row]}
 
     # --- node: synthesize_table (Reduce stage) -------------------------------
@@ -2823,7 +2892,8 @@ class LandscapeState(TypedDict):
     error: Optional[str]
 
 
-def _build_gpt4o_llm(timeout: int, model_env_var: str = "LANDSCAPE_MODEL"):
+def _build_gpt4o_llm(timeout: int, model_env_var: str = "LANDSCAPE_MODEL",
+                     default_model: str = "gpt-4o"):
     """Shared builder for every evidence-heavy structured-extraction call in
     this file (landscape matrix synthesis, catalyst timeline synthesis)
     that is deliberately PINNED to OpenAI gpt-4o, not routed through
@@ -2867,7 +2937,7 @@ def _build_gpt4o_llm(timeout: int, model_env_var: str = "LANDSCAPE_MODEL"):
             "          Required (embeddings.py also depends on it) -- add it to .env."
         )
     return ChatOpenAI(
-        model=os.getenv(model_env_var, "gpt-4o"),
+        model=os.getenv(model_env_var, default_model),
         temperature=0,
         api_key=key,
         # Verified live that gpt-4o hard-rejects any max_tokens above 16384
