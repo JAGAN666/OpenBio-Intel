@@ -1,0 +1,45 @@
+# Docs site -- MkDocs Material on GitHub Pages (built by
+# .github/workflows/docs.yml). Material over Docusaurus deliberately: one
+# YAML + Markdown with built-in search and Mermaid, Python-native (fits the
+# uv toolchain), and no second Node project in a repo that already has one.
+site_name: OpenBio-Intel
+site_description: Open-source clinical market intelligence for biopharma — self-hostable, cited, auditable.
+site_url: https://jagan666.github.io/OpenBio-Intel/
+repo_url: https://github.com/JAGAN666/OpenBio-Intel
+repo_name: JAGAN666/OpenBio-Intel
+
+theme:
+  name: material
+  palette:
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      primary: blue
+      toggle: { icon: material/weather-night, name: Dark mode }
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      primary: blue
+      toggle: { icon: material/weather-sunny, name: Light mode }
+  features:
+    - navigation.sections
+    - navigation.top
+    - content.code.copy
+
+markdown_extensions:
+  - admonition
+  - tables
+  - pymdownx.superfences:
+      custom_fences:
+        - name: mermaid
+          class: mermaid
+          format: !!python/name:pymdownx.superfences.fence_code_format
+
+nav:
+  - Home: index.md
+  - Quickstart: quickstart.md
+  - Architecture: architecture.md
+  - Data sources: data-sources.md
+  - API & MCP: api.md
+  - Benchmarks: benchmarks.md
+  - Comparisons:
+      - vs. Cortellis / Citeline: comparisons/vs-cortellis.md
+      - Open-source AlphaSense alternative: comparisons/alphasense-alternative.md

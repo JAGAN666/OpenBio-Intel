@@ -76,3 +76,4 @@ terraform/crash.log
 # terraform.tfstate* rules above: can hold real infrastructure details)
 .state-backups/
 postgres_data/
+site/
