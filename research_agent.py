@@ -666,7 +666,12 @@ def retrieve_trials(
             )]
         )
 
-    hits = _query_hybrid(collection or COLLECTION_NAME, query, query_filter, limit)
+    # Over-fetch for the cross-encoder when reranking is on -- it re-scores
+    # a wide fused candidate pool and keeps the true top `limit` (see
+    # reranker.py). With reranking off, fetch exactly `limit` as before.
+    import reranker as _rr
+    fetch_n = max(limit, _rr.RERANK_CANDIDATES) if _rr.enabled() else limit
+    hits = _query_hybrid(collection or COLLECTION_NAME, query, query_filter, fetch_n)
 
     results = []
     for h in hits:
@@ -684,7 +689,15 @@ def retrieve_trials(
             "score": round(float(h.score), 4),
             "BriefSummary": (meta.get("BriefSummary") or "")[:1200],
         })
-    return results
+
+    def _rerank_text(r: dict) -> str:
+        iv = ", ".join((x.get("name") or "") for x in (r.get("interventions") or [])
+                       if isinstance(x, dict))
+        conds = ", ".join(c for c in (r.get("conditions") or []) if isinstance(c, str))
+        return (f"{r.get('BriefTitle') or ''}. Conditions: {conds}. "
+                f"Interventions: {iv}. {r.get('BriefSummary') or ''}")
+
+    return _rr.rerank(query, results, _rerank_text, top_k=limit)
 
 
 @tool

@@ -35,6 +35,18 @@ RUN uv sync --locked --no-dev --compile-bytecode
 # resolves to the locked environment.
 ENV PATH="/app/.venv/bin:$PATH"
 
+# Pre-warm both fastembed models INTO the image (same rationale as
+# Dockerfile.etl's scispacy KB pre-warm): the BM25 sparse tokenizer config
+# and the MiniLM reranker ONNX weights (~80MB) otherwise download from HF
+# Hub on first query in EVERY fresh Fargate task -- a cold-start latency
+# hit and a hard runtime dependency on an external host for the retrieval
+# path itself.
+RUN python -c "\
+from fastembed import SparseTextEmbedding; \
+from fastembed.rerank.cross_encoder import TextCrossEncoder; \
+SparseTextEmbedding('Qdrant/bm25'); \
+TextCrossEncoder('Xenova/ms-marco-MiniLM-L-6-v2')"
+
 # --- Qdrant / Neo4j connectivity ----------------------------------------------
 # "localhost" is correct for bare-metal dev but wrong inside a Compose
 # network -- overridden to the qdrant/neo4j service names in
