@@ -3560,11 +3560,11 @@ class CatalystEventDraft(BaseModel):
     )
     indication: str = Field(description="Disease/condition, copied from the source record.")
     source: str = Field(
-        description="The real NCT id (trial-derived event) or SEC "
-                    "AccessionNumber (SEC-derived event) this event comes "
-                    "from -- copied exactly, never invented."
+        description="The real NCT id (trial-derived), SEC AccessionNumber "
+                    "(SEC-derived), or news SourceURL (news-derived) this "
+                    "event comes from -- copied exactly, never invented."
     )
-    source_type: str = Field(description="Literally 'trial' or 'sec' -- which evidence pool this event came from.")
+    source_type: str = Field(description="Literally 'trial', 'sec', or 'news' -- which evidence pool this event came from.")
 
 
 class CatalystTimelineDraft(BaseModel):
@@ -3595,8 +3595,8 @@ class CatalystEvent(BaseModel):
     drug_name: str
     event_type: str
     indication: str
-    source: str = Field(description="NCT id or SEC AccessionNumber this event is grounded in.")
-    source_type: str = Field(description="'trial' or 'sec'.")
+    source: str = Field(description="NCT id, SEC AccessionNumber, or news SourceURL this event is grounded in.")
+    source_type: str = Field(description="'trial', 'sec', or 'news'.")
 
 
 class CatalystTimeline(BaseModel):
@@ -3873,7 +3873,35 @@ def _retrieve_catalyst_evidence(query: str) -> dict:
             "Text": (meta.get("Text") or "")[:800],
         })
 
-    return {"trials": dated_trials, "sec_chunks": sec_chunks}
+    # Corporate news is where forward regulatory dates actually live: FDA
+    # never publishes PDUFA target action dates (21 CFR 314.430) -- every
+    # commercial catalyst calendar reconstructs them from press releases
+    # and earnings-call commentary, both of which this corpus indexes.
+    # The retrieval query is biased toward regulatory-timeline language on
+    # top of the user's own query so the ~20 slots aren't spent on general
+    # pipeline chatter.
+    news_hits = _client().query_points(
+        collection_name=COLLECTION_NAME_NEWS,
+        query=embed_query(f"{query} PDUFA target action date FDA advisory "
+                          f"committee priority review approval decision"),
+        limit=CATALYST_SEC_LIMIT,
+    ).points
+    news_chunks = []
+    for h in news_hits:
+        meta = h.payload or {}
+        news_chunks.append({
+            "SourceType": meta.get("SourceType"),
+            "Company": meta.get("Company"),
+            "Ticker": meta.get("Ticker"),
+            "Title": meta.get("Title"),
+            "PubDate": meta.get("PubDate"),
+            "CallDate": meta.get("CallDate"),
+            "SourceURL": meta.get("SourceURL"),
+            "Text": (meta.get("Text") or "")[:800],
+        })
+
+    return {"trials": dated_trials, "sec_chunks": sec_chunks,
+            "news_chunks": news_chunks}
 
 
 CATALYST_SYSTEM = """You are building a chronological catalyst/readout
@@ -3881,7 +3909,7 @@ tracker for a life sciences market intelligence platform: upcoming market-
 moving events (clinical trial data readouts, FDA decision dates) for a
 query about a therapeutic area or event type.
 
-You are given two pools of retrieved evidence:
+You are given three pools of retrieved evidence:
 - TRIAL RECORDS: each carries REAL, LIVE-LOOKED-UP date fields --
   `primaryCompletionDate` (when primary-endpoint data collection is
   expected/was completed -- the standard proxy for "topline readout"),
@@ -3897,6 +3925,14 @@ You are given two pools of retrieved evidence:
   2026"), or a regulatory submission timeline. Extract a date/event ONLY
   when the excerpt explicitly states one -- never infer a timeframe from
   general pipeline discussion that names no specific date, quarter, or half.
+- CORPORATE NEWS EXCERPTS: press releases and earnings-call commentary --
+  the PRIMARY public source of forward regulatory dates (FDA never
+  publishes PDUFA target action dates itself; companies disclose them
+  here first). Same strict rule: extract an event ONLY when the excerpt
+  explicitly states a date/quarter/half -- e.g. "FDA set a PDUFA date of
+  September 21, 2026", "advisory committee meeting scheduled for March
+  2027". Use event_type 'PDUFA Date', 'FDA Advisory Committee', 'Expected
+  Approval Decision', or 'Regulatory Submission' as the evidence shows.
 
 STRICT GROUNDING:
 - Every event's raw_date must be copied from one of: a trial's
@@ -3907,8 +3943,9 @@ STRICT GROUNDING:
   drug/trial in the evidence, do not create an event for it.
 - Every company/sponsor, drug name, and indication must be copied from the
   source record, not invented.
-- Every event's `source` must be a real NCT id (trial-derived) or SEC
-  AccessionNumber (SEC-derived) copied exactly from the evidence.
+- Every event's `source` must be a real NCT id (trial-derived), SEC
+  AccessionNumber (SEC-derived), or the news excerpt's SourceURL
+  (news-derived) copied exactly from the evidence.
 - `event_type` should reflect what the evidence actually shows: e.g.
   "Phase 3 Primary Completion" / "Phase 2 Primary Completion" (matched to
   the trial's own Phase field) for a trial-derived event from
@@ -3929,6 +3966,7 @@ class CatalystState(TypedDict):
     query: str
     retrieved_trials: list[dict]
     retrieved_sec: list[dict]
+    retrieved_news: list[dict]
     result: Optional[CatalystTimeline]
     retries: int
     error: Optional[str]
@@ -4021,8 +4059,11 @@ def make_catalyst_graph(verbose: bool = True):
         evidence = _retrieve_catalyst_evidence(query)
         if verbose:
             print(f"[catalysts] {len(evidence['trials'])} dated trials, "
-                  f"{len(evidence['sec_chunks'])} SEC excerpts")
-        return {"retrieved_trials": evidence["trials"], "retrieved_sec": evidence["sec_chunks"]}
+                  f"{len(evidence['sec_chunks'])} SEC excerpts, "
+                  f"{len(evidence['news_chunks'])} news excerpts")
+        return {"retrieved_trials": evidence["trials"],
+                "retrieved_sec": evidence["sec_chunks"],
+                "retrieved_news": evidence["news_chunks"]}
 
     def synthesize_node(state: CatalystState) -> dict:
         prompt = (
@@ -4030,7 +4071,9 @@ def make_catalyst_graph(verbose: bool = True):
             f"TRIAL RECORDS WITH REAL COMPLETION DATES ({len(state['retrieved_trials'])}):\n"
             f"{json.dumps(state['retrieved_trials'], indent=2)}\n\n"
             f"SEC FILING EXCERPTS ({len(state['retrieved_sec'])}):\n"
-            f"{json.dumps(state['retrieved_sec'], indent=2)}"
+            f"{json.dumps(state['retrieved_sec'], indent=2)}\n\n"
+            f"CORPORATE NEWS EXCERPTS ({len(state.get('retrieved_news') or [])}):\n"
+            f"{json.dumps(state.get('retrieved_news') or [], indent=2)}"
         )
         prior_error = state.get("error")
         if prior_error and not prior_error.startswith("transient API error:"):
@@ -4089,6 +4132,7 @@ def make_catalyst_graph(verbose: bool = True):
 def run_catalyst_query(graph, query: str) -> CatalystTimeline | None:
     final = graph.invoke(
         {"query": query, "retrieved_trials": [], "retrieved_sec": [],
+         "retrieved_news": [],
          "result": None, "retries": 0, "error": None},
         config={"recursion_limit": 10},
     )
