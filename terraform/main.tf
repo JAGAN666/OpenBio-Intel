@@ -564,6 +564,34 @@ resource "aws_iam_role" "ecs_task" {
   assume_role_policy = data.aws_iam_policy_document.ecs_task_assume.json
 }
 
+# Watchlist storage: the backend task reads/writes ONLY the watchlist/
+# prefix of the data-lake bucket (see watchlist.py -- S3-backed until the
+# Phase-3 Postgres lands). Scoped to the prefix, not the bucket: the rest
+# of the lake is the ETL pipeline's raw archive, which the API tier has no
+# business touching.
+resource "aws_iam_role_policy" "ecs_task_watchlist_s3" {
+  name = "watchlist-s3"
+  role = aws_iam_role.ecs_task.id
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Sid      = "WatchlistObjects"
+        Effect   = "Allow"
+        Action   = ["s3:GetObject", "s3:PutObject"]
+        Resource = "arn:aws:s3:::medical-rag-raw-data-lake-jn-9043/watchlist/*"
+      },
+      {
+        Sid       = "WatchlistList"
+        Effect    = "Allow"
+        Action    = ["s3:ListBucket"]
+        Resource  = "arn:aws:s3:::medical-rag-raw-data-lake-jn-9043"
+        Condition = { StringLike = { "s3:prefix" = "watchlist/*" } }
+      },
+    ]
+  })
+}
+
 # =============================================================================
 # SECRETS MANAGER -- ANTHROPIC_API_KEY and NEO4J_PASSWORD are injected via
 # the container definition's `secrets` block (resolved by the ECS agent at

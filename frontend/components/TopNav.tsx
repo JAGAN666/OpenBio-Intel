@@ -3,13 +3,14 @@
 import { useSyncExternalStore } from "react";
 import { usePathname } from "next/navigation";
 import Link from "next/link";
-import { Activity, CalendarClock, Layers3, Moon, Sun, Table2 } from "lucide-react";
+import { Activity, Bell, CalendarClock, Layers3, Moon, Sun, Table2 } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 
 const NAV_ITEMS: { href: string; label: string; icon: LucideIcon }[] = [
   { href: "/", label: "Smart Table", icon: Table2 },
   { href: "/landscape", label: "Indication Landscape", icon: Layers3 },
   { href: "/catalysts", label: "Catalyst Tracker", icon: CalendarClock },
+  { href: "/watchlist", label: "Watchlist", icon: Bell },
 ];
 
 // useSyncExternalStore, not useEffect+setState: the class the theme-init

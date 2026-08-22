@@ -671,3 +671,65 @@ def export_pptx(data: SmartTableResponse) -> Response:
         media_type="application/vnd.openxmlformats-officedocument.presentationml.presentation",
         headers={"Content-Disposition": 'attachment; filename="clinical_landscape_analysis.pptx"'},
     )
+
+
+# =============================================================================
+# WATCHLIST -- daily-monitoring layer (see watchlist.py's module docstring:
+# S3-backed on purpose until Phase-3 Postgres lands; last-writer-wins is
+# fine at single-user scale). No auth gate -- same AUTH NOTE as the rest.
+# =============================================================================
+class WatchlistAdd(BaseModel):
+    type: str = Field(pattern="^(drug|company|nct|topic)$",
+                      description="What kind of entity is being watched.")
+    value: str = Field(min_length=2, max_length=200,
+                       description="Drug name, company name, NCT id, or free-text topic.")
+
+
+@app.get("/api/watchlist")
+def watchlist_get() -> dict:
+    import watchlist
+    try:
+        return watchlist.list_entries()
+    except Exception as exc:  # noqa: BLE001 -- surface S3 problems verbatim
+        raise HTTPException(status_code=502, detail=f"watchlist storage error: {exc}")
+
+
+@app.post("/api/watchlist")
+def watchlist_add(req: WatchlistAdd) -> dict:
+    import watchlist
+    try:
+        return watchlist.add_entry(req.type, req.value)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=502, detail=f"watchlist storage error: {exc}")
+
+
+@app.delete("/api/watchlist/{entry_id}")
+def watchlist_remove(entry_id: str) -> dict:
+    import watchlist
+    try:
+        return watchlist.remove_entry(entry_id)
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=502, detail=f"watchlist storage error: {exc}")
+
+
+@app.post("/api/watchlist/check")
+def watchlist_check() -> dict:
+    """Run change detection NOW (each watched entity costs ~1-2 live API
+    calls, so this stays interactive at personal-watchlist scale). Also the
+    entry point a future EventBridge schedule will hit."""
+    import watchlist
+    try:
+        return watchlist.run_check()
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=502, detail=f"watchlist check failed: {exc}")
+
+
+@app.get("/api/watchlist/digest")
+def watchlist_digest() -> dict:
+    import watchlist
+    try:
+        return watchlist.latest_digest()
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=502, detail=f"watchlist storage error: {exc}")
