@@ -550,6 +550,7 @@ data "aws_iam_policy_document" "ecs_secrets_access" {
       aws_secretsmanager_secret.jwt_secret_key.arn,
       aws_secretsmanager_secret.kimi_api_key.arn,
       aws_secretsmanager_secret.database_url.arn,
+      aws_secretsmanager_secret.aact_db_url.arn,
     ]
   }
 }
@@ -998,6 +999,8 @@ resource "aws_ecs_task_definition" "backend" {
         { name = "JWT_SECRET_KEY", valueFrom = aws_secretsmanager_secret.jwt_secret_key.arn },
         # Jobs API (enqueue/status/SSE-replay) -- see jobs.py.
         { name = "DATABASE_URL", valueFrom = aws_secretsmanager_secret.database_url.arn },
+        # Gates the AACT text-to-SQL tool (registered only when present).
+        { name = "AACT_DB_URL", valueFrom = aws_secretsmanager_secret.aact_db_url.arn },
       ]
       logConfiguration = {
         logDriver = "awslogs"
@@ -1589,6 +1592,16 @@ resource "aws_db_instance" "jobs" {
 # Pre-composed connection URL as ONE secret -- same reasoning as neo4j_auth:
 # ECS injects secret values verbatim with no concatenation step, and every
 # consumer (api.py, worker.py, langgraph checkpointer) wants a single DSN.
+resource "aws_secretsmanager_secret" "aact_db_url" {
+  name                    = "${local.name}/aact-db-url"
+  recovery_window_in_days = 0
+}
+
+resource "aws_secretsmanager_secret_version" "aact_db_url" {
+  secret_id     = aws_secretsmanager_secret.aact_db_url.id
+  secret_string = var.aact_db_url
+}
+
 resource "aws_secretsmanager_secret" "database_url" {
   name                    = "${local.name}/database-url"
   recovery_window_in_days = 0
@@ -1637,6 +1650,7 @@ resource "aws_ecs_task_definition" "worker" {
         { name = "KIMI_API_KEY", valueFrom = aws_secretsmanager_secret.kimi_api_key.arn },
         { name = "OPENAI_API_KEY", valueFrom = aws_secretsmanager_secret.openai_api_key.arn },
         { name = "DATABASE_URL", valueFrom = aws_secretsmanager_secret.database_url.arn },
+        { name = "AACT_DB_URL", valueFrom = aws_secretsmanager_secret.aact_db_url.arn },
       ]
       logConfiguration = {
         logDriver = "awslogs"

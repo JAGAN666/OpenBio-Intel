@@ -1160,11 +1160,29 @@ studies(nct_id, brief_title, overall_status, phase, study_type,
         enrollment, start_date, primary_completion_date, completion_date,
         source, why_stopped)
 sponsors(nct_id, agency_class, lead_or_collaborator, name)
-conditions(nct_id, name)
+conditions(nct_id, name, downcase_name)
 interventions(nct_id, intervention_type, name)
 facilities(nct_id, name, city, state, country)
 calculated_values(nct_id, number_of_facilities, actual_duration,
                   were_results_reported, months_to_report_results)
+
+DATA-SHAPE RULES (verified against the live database -- getting these
+wrong silently returns 0 rows):
+- phase values are EXACTLY: EARLY_PHASE1, PHASE1, PHASE1/PHASE2, PHASE2,
+  PHASE2/PHASE3, PHASE3, PHASE4, NA  (so: phase = 'PHASE3', never
+  'Phase 3').
+- Diseases/indications live in the conditions table, NOT in brief_title:
+  JOIN ctgov.conditions c ON c.nct_id = s.nct_id and match
+  c.downcase_name LIKE '%obesity%' (downcase_name is pre-lowercased).
+- Drug names live in interventions.name (ILIKE match); sponsor names in
+  sponsors.name with lead_or_collaborator = 'lead' for lead sponsors.
+- overall_status values are UPPERCASE_UNDERSCORED (RECRUITING, COMPLETED,
+  ACTIVE_NOT_RECRUITING, TERMINATED, ...).
+- Umbrella disease terms never appear literally in condition names:
+  'oncology' must become (downcase_name LIKE '%cancer%' OR '%carcinoma%'
+  OR '%tumor%' OR '%oma%'-style specifics); 'cardiovascular' should match
+  '%heart%'/'%cardiac%'/'%coronary%' etc. Expand the concept, don't match
+  the umbrella word.
 """
 
 _AACT_FORBIDDEN = re.compile(

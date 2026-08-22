@@ -273,6 +273,7 @@ jobs:
             -var="neo4j_password=${{ secrets.NEO4J_PASSWORD }}" \
             -var="kimi_api_key=${{ secrets.KIMI_API_KEY }}" \
             -var="jobs_db_password=${{ secrets.JOBS_DB_PASSWORD }}" \
+            -var="aact_db_url=${{ secrets.AACT_DB_URL }}" \
             -var="llm_provider=kimi"
 
       - name: Terraform Apply

@@ -281,3 +281,14 @@ variable "jobs_db_password" {
   sensitive   = true
   default     = ""
 }
+
+variable "aact_db_url" {
+  # Free registered credentials from aact.ctti-clinicaltrials.org -- gates
+  # the query_trial_statistics text-to-SQL tool (research_agent.py only
+  # registers it when this is present). Empty default: the tool simply
+  # stays off rather than failing anything.
+  description = "Postgres DSN for CTTI's AACT ClinicalTrials.gov mirror."
+  type        = string
+  sensitive   = true
+  default     = ""
+}
