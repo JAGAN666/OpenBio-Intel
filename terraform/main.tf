@@ -549,6 +549,7 @@ data "aws_iam_policy_document" "ecs_secrets_access" {
       aws_secretsmanager_secret.openai_api_key.arn,
       aws_secretsmanager_secret.jwt_secret_key.arn,
       aws_secretsmanager_secret.kimi_api_key.arn,
+      aws_secretsmanager_secret.database_url.arn,
     ]
   }
 }
