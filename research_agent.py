@@ -1069,6 +1069,110 @@ def search_corporate_news(query: str) -> str:
 
 
 # =============================================================================
+# TOOL -- FAERS safety signals (live openFDA count API, no local collection)
+# =============================================================================
+FAERS_API = "https://api.fda.gov/drug/event.json"
+# FAERS reporting artifacts that dominate every drug's top-reactions list
+# without carrying a differential safety signal -- filtered from the ranked
+# list so the LLM sees actual clinical reactions. (They still participate
+# in ROR math when explicitly asked about.)
+_FAERS_NOISE = {"OFF LABEL USE", "DRUG INEFFECTIVE", "PRODUCT DOSE OMISSION ISSUE",
+                "DEATH", "MALIGNANT NEOPLASM PROGRESSION", "DISEASE PROGRESSION"}
+
+
+def _faers_total(params: dict) -> int:
+    r = requests.get(FAERS_API, params={**params, "limit": 1}, timeout=20)
+    if r.status_code == 404:
+        return 0  # openFDA returns 404 for zero-match searches
+    r.raise_for_status()
+    return r.json()["meta"]["results"]["total"]
+
+
+def _faers_ror(a: int, drug_total: int, reaction_total: int, overall: int) -> dict:
+    """Reporting odds ratio + 95% CI lower bound -- the standard FAERS
+    disproportionality screen (signal convention: a>=3 and CI lower >1)."""
+    import math
+    b = max(drug_total - a, 1)
+    c = max(reaction_total - a, 1)
+    d = max(overall - drug_total - reaction_total + a, 1)
+    if a == 0:
+        return {"ror": 0.0, "ci95_low": 0.0, "signal": False}
+    ror = (a * d) / (b * c)
+    se = math.sqrt(1 / a + 1 / b + 1 / c + 1 / d)
+    low = math.exp(math.log(ror) - 1.96 * se)
+    return {"ror": round(ror, 2), "ci95_low": round(low, 2),
+            "signal": a >= 3 and low > 1.0}
+
+
+@tool
+def get_safety_signals(drug_name: str, reaction: Optional[str] = None) -> str:
+    """Post-market adverse-event SAFETY SIGNALS for a drug, computed LIVE
+    from FDA FAERS (the adverse event reporting system) -- data none of the
+    indexed corpora carry.
+
+    Use this when the question concerns side effects, toxicity, adverse
+    events, boxed-warning risk, tolerability, or post-market safety of a
+    NAMED drug. Returns the drug's most-reported reactions with reporting
+    odds ratios (ROR): ROR > 1 with ci95_low > 1 and count >= 3 is the
+    standard disproportionality signal, meaning the reaction is reported
+    unusually often for this drug relative to all other drugs. Reporting
+    data proves association, not causation -- say so when summarizing.
+
+    Args:
+        drug_name: The drug to screen, e.g. "pembrolizumab". Generic names
+            match best; brand names often also work.
+        reaction: Optional specific MedDRA reaction term to test, e.g.
+            "COLITIS". When given, returns the ROR for exactly that
+            drug-reaction pair instead of the top-reactions screen.
+    """
+    drug_q = f'patient.drug.medicinalproduct:"{drug_name}"'
+    try:
+        drug_total = _faers_total({"search": drug_q})
+        if drug_total == 0:
+            return json.dumps({"drug": drug_name, "has_results": False,
+                               "note": "No FAERS reports mention this drug name."})
+        overall = _faers_total({"search": "receivedate:[19000101 TO 20991231]"})
+
+        if reaction:
+            terms = [reaction.upper()]
+        else:
+            r = requests.get(FAERS_API, params={
+                "search": drug_q,
+                "count": "patient.reaction.reactionmeddrapt.exact",
+                "limit": 25,
+            }, timeout=20)
+            r.raise_for_status()
+            ranked = [(t["term"], t["count"]) for t in r.json()["results"]]
+            terms = [t for t, _ in ranked if t not in _FAERS_NOISE][:8]
+            counts = dict(ranked)
+
+        signals = []
+        for term in terms:
+            pair_q = f'{drug_q} AND patient.reaction.reactionmeddrapt.exact:"{term}"'
+            a = counts.get(term) if not reaction else None
+            if a is None:
+                a = _faers_total({"search": pair_q})
+            reaction_total = _faers_total(
+                {"search": f'patient.reaction.reactionmeddrapt.exact:"{term}"'})
+            stats = _faers_ror(a, drug_total, reaction_total, overall)
+            signals.append({"reaction": term, "reports_with_drug": a, **stats})
+
+        return json.dumps({
+            "drug": drug_name,
+            "faers_reports_for_drug": drug_total,
+            "has_results": True,
+            "signals": signals,
+            "interpretation": "ROR>1 with ci95_low>1 and >=3 reports is a "
+                              "disproportionality signal (association, not "
+                              "causation). Source: openFDA drug/event API.",
+            "source_url": f"https://open.fda.gov/apis/drug/event/",
+        }, indent=2)
+    except Exception as exc:  # surfaced to the agent as an observation
+        return json.dumps({"error": f"FAERS query failed: {exc}",
+                           "has_results": False})
+
+
+# =============================================================================
 # TOOL -- knowledge graph (Neo4j): exact entity resolution, not vector search
 # =============================================================================
 _neo4j_driver: GraphDatabase.driver | None = None
@@ -1224,7 +1328,7 @@ def query_knowledge_graph(entity: str) -> str:
 
 TOOLS = [search_clinical_trials, search_pdf_literature, query_knowledge_graph,
          search_fda_records, search_pubmed_literature, search_sec_filings,
-         search_corporate_news]
+         search_corporate_news, get_safety_signals]
 
 
 # =============================================================================
@@ -1303,7 +1407,7 @@ class AgentState(TypedDict):
 
 AGENT_SYSTEM = """You are a life sciences market intelligence analyst.
 
-You have SEVEN tools over SEVEN independent sources -- pick whichever
+You have EIGHT tools over EIGHT independent sources -- pick whichever
 actually match what the question is asking, not out of habit:
 
 - query_knowledge_graph -- a Neo4j GRAPH of exact drug-entity relationships
@@ -1364,6 +1468,15 @@ actually match what the question is asking, not out of habit:
   timing a formal SEC filing would not carry. Distinct from
   search_sec_filings: that is the company's official, reviewed disclosure;
   this is real-time news and management's own words as spoken/published.
+- get_safety_signals -- LIVE post-market adverse-event screening from FDA
+  FAERS (not an indexed corpus; queried at answer time). Use it whenever
+  the question concerns SIDE EFFECTS, TOXICITY, ADVERSE EVENTS, boxed-
+  warning risk, tolerability, or post-market safety of a named drug. It
+  returns the drug's most-reported reactions with reporting odds ratios
+  and flags standard disproportionality signals. No other tool carries
+  post-market safety data -- never answer a safety question from trial
+  registry summaries alone when this tool is available. Always relay its
+  caveat: reporting data shows association, not causation.
 
 These are not alternatives to pick one of -- for a holistic pipeline question
 that touches trial design/entity relationships, reported results, regulatory
