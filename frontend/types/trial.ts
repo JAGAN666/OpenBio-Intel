@@ -26,7 +26,15 @@ export type Phase = string;
  */
 export type Interventions = string[];
 /**
- * One to two sentences on the mechanism or key finding, taken ONLY from the retrieved trial text. Never supply a mechanism from prior knowledge — an unsupported claim is worse than a gap. If the mechanism is absent, describe whatever trial design or clinical findings are available in the text, and ensure the boolean flag is set to False.
+ * The primary condition(s) studied -- OVERWRITTEN deterministically from the trial record's own conditions field after extraction; whatever you write here is replaced.
+ */
+export type Indication = string;
+/**
+ * Trial recruitment status -- OVERWRITTEN deterministically from the trial record after extraction; whatever you write here is replaced.
+ */
+export type Status = string;
+/**
+ * ONE analyst-grade line, not registry boilerplate: what is being tested against what comparator, in which population, and what is notable (novel target, first-line setting, registrational intent). NEVER open with 'This study/trial is designed to evaluate...' or restate that a trial evaluates safety and efficacy -- every trial does; say what makes THIS one worth an analyst's attention, using ONLY the retrieved text. If the mechanism of action is stated, name it. An unsupported claim is worse than a gap.
  */
 export type MechanismOrFindings = string;
 /**
@@ -69,6 +77,8 @@ export interface TrialRow {
   sponsor: Sponsor;
   phase: Phase;
   interventions: Interventions;
+  indication?: Indication;
+  status?: Status;
   mechanism_or_findings: MechanismOrFindings;
   mechanism_described: MechanismDescribed;
   sources?: Sources;

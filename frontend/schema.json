@@ -61,8 +61,20 @@
           "title": "Interventions",
           "type": "array"
         },
+        "indication": {
+          "default": "",
+          "description": "The primary condition(s) studied -- OVERWRITTEN deterministically from the trial record's own conditions field after extraction; whatever you write here is replaced.",
+          "title": "Indication",
+          "type": "string"
+        },
+        "status": {
+          "default": "",
+          "description": "Trial recruitment status -- OVERWRITTEN deterministically from the trial record after extraction; whatever you write here is replaced.",
+          "title": "Status",
+          "type": "string"
+        },
         "mechanism_or_findings": {
-          "description": "One to two sentences on the mechanism or key finding, taken ONLY from the retrieved trial text. Never supply a mechanism from prior knowledge \u2014 an unsupported claim is worse than a gap. If the mechanism is absent, describe whatever trial design or clinical findings are available in the text, and ensure the boolean flag is set to False.",
+          "description": "ONE analyst-grade line, not registry boilerplate: what is being tested against what comparator, in which population, and what is notable (novel target, first-line setting, registrational intent). NEVER open with 'This study/trial is designed to evaluate...' or restate that a trial evaluates safety and efficacy -- every trial does; say what makes THIS one worth an analyst's attention, using ONLY the retrieved text. If the mechanism of action is stated, name it. An unsupported claim is worse than a gap.",
           "title": "Mechanism Or Findings",
           "type": "string"
         },

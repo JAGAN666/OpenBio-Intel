@@ -536,13 +536,13 @@ def catalysts(req: CatalystRequest) -> CatalystTimeline:
 # looking at, so the request body IS the SmartTableResponse itself, not a
 # query string -- these endpoints do no LLM/Qdrant/Neo4j work at all.
 # =============================================================================
-EXCEL_HEADERS = ["NCT ID", "Sponsor", "Phase", "Interventions", "Mechanism / Findings",
-                 "Mechanism Described", "Sources"]
+EXCEL_HEADERS = ["NCT ID", "Indication", "Phase", "Status", "Sponsor", "Interventions",
+                 "Mechanism / Findings", "Mechanism Described", "Sources"]
 # Column widths tuned for this schema's actual content shape (mechanism text
 # runs long, phase/sponsor are short) -- not left at openpyxl's default,
 # which would make the export technically correct but unreadable without
 # the analyst manually resizing every column first.
-EXCEL_COLUMN_WIDTHS = [14, 28, 16, 34, 70, 18, 46]
+EXCEL_COLUMN_WIDTHS = [14, 30, 14, 20, 28, 34, 70, 18, 46]
 EXCEL_HEADER_FILL = "1E3A5F"  # matches the frontend's sky-900-ish header tone
 
 
@@ -570,8 +570,10 @@ def export_excel(data: SmartTableResponse) -> Response:
     for row in data.table_data:
         ws.append([
             row.nct_id,
-            row.sponsor,
+            row.indication,
             row.phase,
+            row.status,
+            row.sponsor,
             ", ".join(row.interventions),
             row.mechanism_or_findings,
             "Yes" if row.mechanism_described else "No",

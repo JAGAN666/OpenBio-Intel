@@ -239,13 +239,33 @@ class TrialRow(BaseModel):
                     "therapeutic agents (drugs/biologics) over assessment "
                     "procedures such as CT or biospecimen collection."
     )
+    indication: str = Field(
+        default="",
+        description="The primary condition(s) studied -- OVERWRITTEN "
+                    "deterministically from the trial record's own "
+                    "conditions field after extraction; whatever you write "
+                    "here is replaced."
+    )
+    status: str = Field(
+        default="",
+        description="Trial recruitment status -- OVERWRITTEN "
+                    "deterministically from the trial record after "
+                    "extraction; whatever you write here is replaced."
+    )
     mechanism_or_findings: str = Field(
-        description="One to two sentences on the mechanism or key finding, "
-                    "taken ONLY from the retrieved trial text. Never supply a "
-                    "mechanism from prior knowledge — an unsupported claim is "
-                    "worse than a gap. If the mechanism is absent, describe "
-                    "whatever trial design or clinical findings are available "
-                    "in the text, and ensure the boolean flag is set to False."
+        description="ONE analyst-grade line in EXACTLY this shape: "
+                    "'<Setting/population>: <regimen> vs <comparator> — "
+                    "<the notable point>.' Example: 'First-line R/M HNSCC: "
+                    "cetuximab + pembrolizumab + chemo vs pembrolizumab + "
+                    "chemo — randomized Phase 3.' Another: 'PD-L1+ NSCLC "
+                    "post-progression: trastuzumab deruxtecan (HER2 ADC) + "
+                    "pembrolizumab vs platinum doublet — first ADC-IO "
+                    "pairing in this setting per the record.' FORBIDDEN "
+                    "openings (auto-fail): 'This trial', 'This study', "
+                    "'This is a', anything containing 'evaluate the safety "
+                    "and efficacy'. Name the mechanism when the text states "
+                    "it. Use ONLY the retrieved text; an unsupported claim "
+                    "is worse than a gap."
     )
     # Declared AFTER the prose deliberately: Pydantic field order is the JSON
     # schema property order, which is generation order in the tool call. The
@@ -1978,8 +1998,24 @@ provided rows.
   reference an identifier that is not there.
 - If the rows do not support an answer to the question, say so plainly.
 
-Group related mechanisms of action where that aids the reader. Be specific
-about drug targets and modalities exactly as the rows describe them."""
+VOICE AND STRUCTURE -- write like a senior analyst briefing a portfolio
+manager, not a librarian listing records:
+- OPEN WITH THE SO-WHAT in one or two sentences: the dominant pattern in
+  the rows (which combination classes / mechanisms / settings dominate),
+  who is driving it, and roughly how the rows break down (e.g. "the
+  activity concentrates in first-line chemo-IO combinations, led by three
+  registrational Phase 3s"). NEVER open with filler like "Several
+  clinical trials are investigating..." -- every answer to every question
+  could start that way, which is exactly why yours must not.
+- Then the specifics, GROUPED analytically (by combination class,
+  mechanism, or indication -- whichever best serves the question), naming
+  the most consequential trials first: latest phase, registrational
+  intent, and major-sponsor programs outrank early investigator studies.
+- Flag what is genuinely notable when the rows support it: novel targets,
+  first-in-class pairings, crowded vs. empty settings.
+- Dense with content, free of throat-clearing. Cut any sentence that
+  would be true of every trial ("designed to evaluate safety and
+  efficacy")."""
 
 # --- Reduce stage, sources-only variant: no trial rows exist this run ------
 # (e.g. a corporate-strategy + mechanism question that never matched a
@@ -2594,6 +2630,20 @@ def make_graph(model: str, verbose: bool = True, checkpointer=None):
             url=f"https://clinicaltrials.gov/study/{nct_id}",
         )] + [s for s in (row.sources or []) if s.source_type != "registry"]
 
+        # Indication and status come from the record, not the model -- the
+        # worker literally holds the trial payload, so copying via an LLM
+        # would only add error. Same policy as the registry citation.
+        conds = [c for c in (trial.get("conditions") or []) if isinstance(c, str)]
+        row.indication = ", ".join(conds[:2]) + (" +" if len(conds) > 2 else "")
+        row.status = (trial.get("OverallStatus") or "").replace("_", " ").title()
+
+        # Placebo-only arm labels add table noise without information (the
+        # comparator structure is already in mechanism_or_findings when it
+        # matters); combination entries that merely CONTAIN placebo stay.
+        row.interventions = [iv for iv in row.interventions
+                             if not re.match(r"^placebos?( for .+| capsule| tablet)?$",
+                                             iv.strip(), re.I)]
+
         if verbose:
             print(f"  ✓ {row.nct_id}  phase={row.phase!r}  "
                   f"mechanism_described={row.mechanism_described}  "
@@ -2601,12 +2651,32 @@ def make_graph(model: str, verbose: bool = True, checkpointer=None):
                   f"({time.time() - started:.1f}s)")
         return {"extracted_rows": [row]}
 
+    _PHASE_RANK = {"Phase 4": 5, "Phase 3": 4, "Phase 2/Phase 3": 3.5,
+                   "Phase 2": 3, "Phase 1/Phase 2": 2.5, "Phase 1": 2,
+                   "Early Phase 1": 1.5}
+    _LIVE_STATUSES = {"Recruiting", "Active Not Recruiting",
+                      "Not Yet Recruiting", "Enrolling By Invitation"}
+
+    def _order_rows(rows: list) -> list:
+        """Deterministic analyst ordering: latest-phase first, live trials
+        before dead ones, newest registrations first. Found necessary by
+        audit: Map workers finish in arbitrary order, so a Phase 1
+        investigator study could sit above a registrational Phase 3."""
+        def _key(r):
+            phase_rank = max((v for k, v in _PHASE_RANK.items()
+                              if k.lower() in (r.phase or "").lower()),
+                             default=0)
+            live = 1 if (r.status or "") in _LIVE_STATUSES else 0
+            nct_num = int(re.sub(r"\D", "", r.nct_id) or 0)
+            return (-phase_rank, -live, -nct_num)
+        return sorted(rows, key=_key)
+
     # --- node: synthesize_table (Reduce stage) -------------------------------
     def synthesize_table_node(state: AgentState) -> dict:
         question = next(
             (m.content for m in state["messages"] if isinstance(m, HumanMessage)), ""
         )
-        rows = state.get("extracted_rows", [])
+        rows = _order_rows(state.get("extracted_rows", []))
         retries = state.get("synthesis_retries", 0)
 
         # No trial rows this run: either genuinely nothing was found, or the

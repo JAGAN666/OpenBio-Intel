@@ -140,11 +140,41 @@ const columns: ColumnDef<typeof features, TrialRow, any>[] = [
       );
     },
   }),
+  columnHelper.accessor("indication", {
+    header: "Indication",
+    cell: (info) => (
+      <span className="block max-w-[14rem] text-sm text-slate-700 dark:text-slate-300">
+        {info.getValue() || "—"}
+      </span>
+    ),
+  }),
   columnHelper.accessor("phase", {
     header: "Phase",
     cell: (info) => (
       <span className="whitespace-nowrap text-sm text-slate-700 dark:text-slate-300">{info.getValue()}</span>
     ),
+  }),
+  columnHelper.accessor("status", {
+    header: "Status",
+    cell: (info) => {
+      const v = info.getValue() || "";
+      const live = ["Recruiting", "Not Yet Recruiting", "Active Not Recruiting",
+        "Enrolling By Invitation"].includes(v);
+      return v ? (
+        <span
+          className={
+            "inline-flex whitespace-nowrap rounded-md border px-2 py-0.5 text-[0.7rem] font-medium " +
+            (live
+              ? "border-emerald-200 bg-emerald-50 text-emerald-700 dark:border-emerald-900/60 dark:bg-emerald-950/40 dark:text-emerald-400"
+              : "border-slate-200 bg-slate-100 text-slate-500 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-400")
+          }
+        >
+          {v}
+        </span>
+      ) : (
+        <span className="text-xs text-slate-400 dark:text-slate-600">—</span>
+      );
+    },
   }),
   columnHelper.accessor("sponsor", {
     header: "Sponsor",
