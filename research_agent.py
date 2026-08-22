@@ -3380,7 +3380,9 @@ def make_graph(model: str, verbose: bool = True, checkpointer=None):
                 entity_patterns.append(
                     (patterns, ent.get("kind", "drug"), verified_ncts))
                 union_verified |= verified_ncts
-                per_entity_bits.append(f"{ent['name']}: {ent_total}")
+                per_entity_bits.append(
+                    ent["name"] if len(asked) == 1
+                    else f"{ent['name']} ({ent_total:,})")
                 have = {t.get("NCTId") for t in trials}
                 trials = trials + [t for t in exact_trials
                                    if t["NCTId"] not in have]
@@ -3402,7 +3404,7 @@ def make_graph(model: str, verbose: bool = True, checkpointer=None):
             if total_matching > POOL_MAX_TRIALS:
                 coverage_note = (
                     f"{total_matching:,} trials in the corpus verifiably "
-                    f"involve {' / '.join(per_entity_bits)}; showing the "
+                    f"involve {' or '.join(per_entity_bits)}; showing the "
                     f"{POOL_MAX_TRIALS} most advanced and most recent "
                     f"(latest phase first, active trials before completed "
                     f"ones, newest registrations first).")
