@@ -1721,7 +1721,34 @@ _extraction_semaphore = threading.Semaphore(EXTRACTION_CONCURRENCY)
 # to whatever the account's real TPM budget is at the moment, rather than
 # guessing a fixed backoff that's either too short (still 429s) or too long
 # (wastes time when the budget already refilled).
-_RETRY_AFTER_RE = re.compile(r"try again in ([\d.]+)s")
+# Matches both provider dialects observed live: OpenAI's "please try again
+# in 1.2s" AND Kimi/Moonshot's "please try again after 1 seconds".
+_RETRY_AFTER_RE = re.compile(r"try again (?:in|after) ([\d.]+)\s*s")
+
+
+def _invoke_ratelimit_retry(llm, msgs, *, attempts: int = 4, label: str = "",
+                            verbose: bool = True):
+    """invoke() with rate-limit patience for the ORCHESTRATION provider.
+
+    Exists because of a real prod 502: the Kimi free tier enforces
+    "organization max RPM: 3", and with max_retries=0 on the client (a
+    deliberate choice -- see build_llm) a single 429 during the agent or
+    narrative step killed the entire multi-minute run. Waits what the
+    provider's own message asks for (both dialects parsed by
+    _RETRY_AFTER_RE), with a floor that actually clears an RPM window, and
+    re-raises after `attempts` so genuine outages still fail loudly."""
+    for attempt in range(attempts):
+        try:
+            return llm.invoke(msgs)
+        except openai.RateLimitError as exc:
+            if attempt == attempts - 1:
+                raise
+            m = _RETRY_AFTER_RE.search(str(exc))
+            wait = max(float(m.group(1)) if m else 0.0, 8.0 * (attempt + 1))
+            if verbose:
+                print(f"  ⚠ rate-limited{f' ({label})' if label else ''} "
+                      f"(attempt {attempt + 1}/{attempts}), waiting {wait:.0f}s")
+            time.sleep(wait)
 
 
 def make_graph(model: str, verbose: bool = True):
@@ -1803,10 +1830,10 @@ def make_graph(model: str, verbose: bool = True):
         # a guardrail, not the actual answer.
         verdict: IntentClassification | None = None
         for attempt in range(3):
-            verdict = intent_llm.invoke([
+            verdict = _invoke_ratelimit_retry(intent_llm, [
                 SystemMessage(content=INTENT_SYSTEM),
                 HumanMessage(content=question),
-            ])
+            ], label="intent", verbose=verbose)
             if verdict is not None:
                 break
             if verbose:
@@ -1837,7 +1864,7 @@ def make_graph(model: str, verbose: bool = True):
         # Cap the ReACT loop: past the limit, stop offering tools so the
         # agent must conclude and routing falls through to synthesis.
         model_to_use = llm if state.get("tool_rounds", 0) >= MAX_TOOL_ROUNDS else llm_with_tools
-        reply = model_to_use.invoke(msgs)
+        reply = _invoke_ratelimit_retry(model_to_use, msgs, label="agent", verbose=verbose)
 
         if verbose:
             _trace_agent(reply, state.get("tool_rounds", 0))
@@ -2172,10 +2199,10 @@ def make_graph(model: str, verbose: bool = True):
                 f"Correct the structure this time — match the schema exactly."
             )
 
-        outcome: dict = narrative_llm.invoke([
+        outcome: dict = _invoke_ratelimit_retry(narrative_llm, [
             SystemMessage(content=system_prompt),
             HumanMessage(content=prompt),
-        ])
+        ], label="narrative", verbose=verbose)
         parsed: NarrativeSummary | None = outcome.get("parsed")
         error = outcome.get("parsing_error")
 
