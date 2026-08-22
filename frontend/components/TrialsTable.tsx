@@ -220,10 +220,23 @@ const columns: ColumnDef<typeof features, TrialRow, any>[] = [
   }),
 ];
 
-export default function TrialsTable({ data }: { data: TrialRow[] }) {
+export default function TrialsTable({
+  data,
+  totalMatching,
+  coverageNote,
+}: {
+  data: TrialRow[];
+  /** TRUE corpus-wide match count from the backend's verified entity fetch —
+      may exceed data.length when the extraction ceiling subset-selected. */
+  totalMatching?: number;
+  /** Deterministic backend explanation of the subset rule (or an honest
+      zero-match outcome). Never LLM-authored. */
+  coverageNote?: string;
+}) {
   const table = useTable({ features, columns, data });
 
   const described = data.filter((r) => r.mechanism_described).length;
+  const truncated = totalMatching !== undefined && totalMatching > data.length;
 
   return (
     <section className="rounded-xl border border-slate-200 bg-white shadow-sm dark:border-slate-800 dark:bg-slate-900">
@@ -233,10 +246,24 @@ export default function TrialsTable({ data }: { data: TrialRow[] }) {
           Comparative Trials Grid
         </h2>
         <span className="ml-auto text-xs text-slate-500 dark:text-slate-400">
-          {data.length} trials · {described} with target identified ·{" "}
-          {data.length - described} design details only
+          {truncated ? (
+            <>
+              Showing <strong>{data.length}</strong> of{" "}
+              <strong>{totalMatching.toLocaleString()}</strong> matching trials
+            </>
+          ) : (
+            <>{data.length} trials</>
+          )}{" "}
+          · {described} with target identified · {data.length - described} design
+          details only
         </span>
       </header>
+
+      {coverageNote && (
+        <p className="border-b border-amber-200 bg-amber-50 px-6 py-2.5 text-xs leading-relaxed text-amber-800 dark:border-amber-900/50 dark:bg-amber-950/30 dark:text-amber-300">
+          {coverageNote}
+        </p>
+      )}
 
       <div className="overflow-x-auto">
         <table className="w-full border-collapse text-left">

@@ -263,6 +263,69 @@ def _trial_haystack(trial: dict) -> str:
     ])
 
 
+def _expand_entity_aliases(name: str, kind: str = "drug") -> list[str]:
+    """Alias set for an exact entity: the verbatim ask plus its RxNorm
+    standard name and brand names (brand <-> generic bridging). Sibling
+    drug-node names are deliberately NOT collected -- verified live that
+    they drag in dosage-form garbage ("NM1F Injection") via loosely-mapped
+    concepts, and the boundary regex on the base name already matches
+    dose/strength variants. Fail-open to [name]: the guarantee degrades to
+    literal matching (honest small results), never to lookalikes.
+    Companies get no expansion (sponsor-boundary matching handles 'Merck'
+    inside 'Merck Sharp & Dohme LLC')."""
+    if kind != "drug":
+        return [name]
+    aliases = {name}
+    norm_ask = _norm_text(name)
+    try:
+        with _graph_client().session() as session:
+            rows = session.run(
+                """
+                MATCH (d:Drug)-[:MAPPED_TO_RXNORM]->(c:Concept)
+                WHERE d.name =~ $pattern
+                   OR toLower(c.standard_name) = toLower($name)
+                   OR ANY(b IN coalesce(c.brand_names, [])
+                          WHERE toLower(b) = toLower($name))
+                RETURN DISTINCT d.name AS dname,
+                       c.standard_name AS std, c.brand_names AS brands
+                LIMIT 10
+                """,
+                name=name, pattern=_alias_java_regex([name]),
+            )
+            for r in rows:
+                # A concept only counts as THE asked entity when the ask
+                # equals (normalized) the drug-node name, the standard name,
+                # or a brand name. Substring drug-node hits are NOT enough:
+                # placebo-arm intervention names ("Placebo matching
+                # BMS-986278") become Drug nodes mapped to the RxNorm
+                # 'placebo' concept -- verified live to alias-poison the
+                # exact fetch into matching 9,707 trials.
+                candidates = ([r["std"] or ""] + list(r["brands"] or []))
+                if (_norm_text(r["dname"] or "") != norm_ask
+                        and all(_norm_text(c) != norm_ask for c in candidates)):
+                    continue
+                if r["std"]:
+                    aliases.add(r["std"])
+                for b in (r["brands"] or []):
+                    aliases.add(b)
+    except Exception as exc:  # noqa: BLE001 -- fail open
+        print(f"[entity] alias expansion unavailable for {name!r}: {exc}")
+
+    # RxNorm brand_names carry dosage-form artifacts ("Injection", "Pen")
+    # that as aliases would match essentially every trial. Drop generic /
+    # too-short aliases; the verbatim ask always survives.
+    _GENERIC = {"injection", "tablet", "tablets", "capsule", "capsules",
+                "oral", "solution", "suspension", "syringe", "kit", "pen",
+                "vial", "cream", "spray", "patch", "gel", "powder",
+                "concentrate", "infusion", "implant", "auto injector",
+                "placebo", "oral tablet", "oral solution", "oral capsule",
+                "pen injector", "prefilled syringe", "injectable solution"}
+    aliases = {a for a in aliases
+               if _norm_text(a) not in _GENERIC and len(_norm_text(a)) >= 4}
+    aliases.add(name)
+    return sorted(aliases)[:12]
+
+
 def _entity_matches_trial(patterns: list, trial: dict,
                           kind: str = "drug") -> bool:
     """Does this trial verifiably contain any alias of the asked entity?
@@ -407,6 +470,28 @@ class SmartTableResponse(BaseModel):
         description="One TrialRow for every distinct trial retrieved from the "
                     "database. This array backs the frontend data grid."
     )
+    # Completeness honesty fields -- set DETERMINISTICALLY in
+    # synthesize_table_node from prepare_extraction's verified counts, never
+    # by the LLM. Optional so cached results from older runs (fields absent)
+    # still validate and render unchanged.
+    total_matching: Optional[int] = Field(
+        default=None,
+        description="TRUE number of trials in the corpus verifiably matching "
+                    "the asked entity, when the query named one. May exceed "
+                    "len(table_data) when the corpus has more matches than "
+                    "the extraction ceiling."
+    )
+    shown: Optional[int] = Field(
+        default=None,
+        description="Number of rows actually shown (len(table_data)); paired "
+                    "with total_matching for the 'Showing X of Y' header."
+    )
+    coverage_note: Optional[str] = Field(
+        default=None,
+        description="Deterministic one-line explanation of the subset rule "
+                    "when total_matching > shown, or of an honest zero-match "
+                    "outcome."
+    )
 
 
 class NarrativeSummary(BaseModel):
@@ -424,6 +509,25 @@ class NarrativeSummary(BaseModel):
     )
 
 
+class ExactEntity(BaseModel):
+    """A SPECIFIC named thing the user asked about -- powers the exactness
+    guarantee (results are hard-filtered to trials verifiably containing
+    it). Emit one ONLY for a specific product name, development code, or
+    company. Drug CLASSES ('GLP-1 agonists', 'checkpoint inhibitors',
+    'ADCs'), targets ('PD-1', 'KRAS'), and diseases are NOT exact entities
+    -- emitting one for a class would wrongly filter the whole answer."""
+
+    name: str = Field(
+        description="The entity name VERBATIM as the user wrote it, e.g. "
+                    "'BMS-986278', 'Keytruda', 'Merck'. Never paraphrase, "
+                    "expand, or correct it."
+    )
+    kind: str = Field(
+        description="'drug' for a drug/biologic product name or development "
+                    "code; 'company' for a sponsor/company name."
+    )
+
+
 class IntentClassification(BaseModel):
     """Input-guardrail verdict from the IntentClassifier node."""
 
@@ -437,6 +541,17 @@ class IntentClassification(BaseModel):
     reason: str = Field(
         description="One short sentence explaining the verdict. Logged for "
                     "debugging; not shown to the end user."
+    )
+    exact_entities: list[ExactEntity] = Field(
+        default_factory=list,
+        description="Specific named drugs/companies in the question -- EMPTY "
+                    "for class/topic/disease questions. 'trials of BMS-986278'"
+                    " -> [BMS-986278/drug]. 'X combined with Y' -> both. "
+                    "'GLP-1 agonist trials' -> []. 'Phase 3 oncology trials' "
+                    "-> []. 'Merck pipeline' -> [Merck/company]. When unsure "
+                    "whether something is a class or a product, emit NOTHING "
+                    "-- a missed filter is safe, a wrong filter destroys the "
+                    "answer."
     )
 
 
@@ -1637,7 +1752,7 @@ def _neo4j_row_to_trial(r) -> dict:
 
 
 def fetch_trials_exact(aliases: list[str], kind: str = "drug",
-                       cap: int = None) -> tuple[list[dict], int]:
+                       cap: int = None) -> tuple[list[dict], int, set]:
     """COMPLETE, EXACT retrieval for a named entity: every trial in the
     corpus that verifiably contains one of `aliases`, plus the TRUE total.
 
@@ -1724,7 +1839,7 @@ def fetch_trials_exact(aliases: list[str], kind: str = "drug",
         return (live, -nct_num)
 
     verified.sort(key=_key)
-    return verified[:cap], len(verified)
+    return verified[:cap], len(verified), {t["NCTId"] for t in verified}
 
 
 KG_COUNT_QUERY = """
@@ -1959,6 +2074,14 @@ class AgentState(TypedDict):
     # Exact-statistics payloads from query_trial_statistics (AACT SQL) --
     # same sources-only treatment; the SQL and its rows ARE the evidence.
     retrieved_stats: Annotated[list[dict], operator.add]
+    # Exactness/completeness pipeline (see prepare_extraction_node):
+    # entities the user literally asked about (from the intent classifier),
+    # the prepared post-filter pools, and the TRUE match total + coverage
+    # note surfaced in the response.
+    asked_entities: Optional[list]
+    prepared_pools: Optional[dict]
+    trial_total_matching: Optional[int]
+    coverage_note: Optional[str]
     # Per-worker input only. Set exclusively via the Send("extract_trial",
     # {"single_trial": ..., "literature": ..., "fda_records": ..., ...})
     # payload in continue_to_extraction -- no other node reads or writes
@@ -2323,7 +2446,20 @@ compounds you don't recognise, since our database may still cover them.
 
 Answer False for anything else: recipes, general chit-chat, coding help,
 unrelated science, or any topic that is not about clinical trials or pharma --
-even if it superficially uses a medical-sounding word."""
+even if it superficially uses a medical-sounding word.
+
+ALSO extract exact_entities -- SPECIFIC named drugs or companies only:
+- 'Which trials use BMS-986278?' -> [{name: 'BMS-986278', kind: 'drug'}]
+- 'Keytruda combined with chemotherapy' -> [{name: 'Keytruda', kind: 'drug'}]
+- 'trials combining pembrolizumab and lenvatinib' -> BOTH, kind drug each
+- "Merck's pipeline in oncology" -> [{name: 'Merck', kind: 'company'}]
+- 'Phase 3 GLP-1 agonist trials for obesity' -> []  (class, not a product)
+- 'checkpoint inhibitor combinations' -> []  (class)
+- 'trials targeting KRAS G12C' -> []  (target)
+- 'Phase 3 oncology trials' -> []  (topic)
+Copy names VERBATIM (never expand/correct). When unsure whether a term is
+a class or a specific product, emit NOTHING for it: a missed entity is
+harmless, a wrong one silently filters the entire answer."""
 
 
 def build_llm(model: str, max_tokens: int = MAX_TOKENS, timeout: int = 180):
@@ -2439,6 +2575,15 @@ EXTRACTION_TIMEOUT = 60
 # 429-ing and silently dropping their row.
 EXTRACTION_CONCURRENCY = 3
 _extraction_semaphore = threading.Semaphore(EXTRACTION_CONCURRENCY)
+
+# The mini tier was UNTHROTTLED before POOL_MAX_TRIALS raised fanouts to 150
+# -- 150 simultaneous gpt-4o-mini calls both burn the mini TPM budget in one
+# burst (turning cheap 429s into gpt-4o escalations, each of which then
+# queues on the 3-slot semaphore above: the real latency bomb at scale) and
+# hammer the local embedding/ONNX thread pool. 12 concurrent mini calls
+# keeps the pipe full without tripping the burst limit.
+EXTRACTION_MINI_CONCURRENCY = int(os.getenv("EXTRACTION_MINI_CONCURRENCY", "12"))
+_extraction_mini_semaphore = threading.Semaphore(EXTRACTION_MINI_CONCURRENCY)
 
 # Matches openai's own "...please try again in 16.29s..." message text --
 # sleeping exactly what the API itself says to (plus a small buffer) adapts
@@ -2580,7 +2725,9 @@ def make_graph(model: str, verbose: bool = True, checkpointer=None):
             return {"is_in_domain": True}
         if verbose:
             _trace_intent(verdict)
-        return {"is_in_domain": verdict.is_in_domain}
+        return {"is_in_domain": verdict.is_in_domain,
+                "asked_entities": [e.model_dump() for e in
+                                   (verdict.exact_entities or [])]}
 
     # --- node: OutOfDomain (deterministic, no LLM call) --------------------
     def out_of_domain_node(state: AgentState) -> dict:
@@ -2824,22 +2971,40 @@ def make_graph(model: str, verbose: bool = True, checkpointer=None):
         # behind it would rebuild the very queue the cascade removes.
         row: TrialRow | None = None
         tier = "mini"
-        try:
-            out = extraction_llm_mini.invoke(messages)
-            parsed = out.get("parsed")
-            if _cascade_acceptable(parsed):
-                row = parsed
-                if verbose:
-                    usage = getattr(out.get("raw"), "usage_metadata", None) or {}
-                    cached = (usage.get("input_token_details") or {}).get("cache_read", 0)
-                    print(f"  ↳ {nct_id}: mini tier OK "
-                          f"(cached input tokens: {cached})")
-            elif verbose:
-                why = out.get("parsing_error") or "critical-field check failed"
-                print(f"  ↳ {nct_id}: mini tier rejected ({why}) — escalating to gpt-4o")
-        except Exception as exc:  # noqa: BLE001 -- any mini failure just escalates
-            if verbose:
-                print(f"  ↳ {nct_id}: mini tier errored ({exc}) — escalating to gpt-4o")
+        with _extraction_mini_semaphore:
+            # One retry-after-guided second chance on a mini 429 before
+            # escalating: a mini rate-limit is transient and cheap to wait
+            # out, while an escalation burns one of the THREE gpt-4o slots
+            # for ~20s -- at a 150-row fanout, letting every burst-429
+            # escalate is what turns a 2-minute run into a 20-minute one.
+            for mini_attempt in range(2):
+                try:
+                    out = extraction_llm_mini.invoke(messages)
+                    parsed = out.get("parsed")
+                    if _cascade_acceptable(parsed):
+                        row = parsed
+                        if verbose:
+                            usage = getattr(out.get("raw"), "usage_metadata", None) or {}
+                            cached = (usage.get("input_token_details") or {}).get("cache_read", 0)
+                            print(f"  ↳ {nct_id}: mini tier OK "
+                                  f"(cached input tokens: {cached})")
+                    elif verbose:
+                        why = out.get("parsing_error") or "critical-field check failed"
+                        print(f"  ↳ {nct_id}: mini tier rejected ({why}) — escalating to gpt-4o")
+                    break
+                except openai.RateLimitError as exc:
+                    if mini_attempt == 0:
+                        m = _RETRY_AFTER_RE.search(str(exc))
+                        wait = min(float(m.group(1)), 30.0) + 1.0 if m else 5.0
+                        if verbose:
+                            print(f"  ↳ {nct_id}: mini tier 429, retrying in {wait:.1f}s")
+                        time.sleep(wait)
+                    elif verbose:
+                        print(f"  ↳ {nct_id}: mini tier 429 twice — escalating to gpt-4o")
+                except Exception as exc:  # noqa: BLE001 -- any other mini failure just escalates
+                    if verbose:
+                        print(f"  ↳ {nct_id}: mini tier errored ({exc}) — escalating to gpt-4o")
+                    break
 
         # --- tier 2: pinned gpt-4o, semaphore + adaptive retry (unchanged
         # from the pre-cascade behavior; see EXTRACTION_CONCURRENCY) ------
@@ -2931,6 +3096,18 @@ def make_graph(model: str, verbose: bool = True, checkpointer=None):
         rows = _order_rows(state.get("extracted_rows", []))
         retries = state.get("synthesis_retries", 0)
 
+        # Completeness honesty -- carried from prepare_extraction, attached
+        # to the response DETERMINISTICALLY (the LLM never sets these).
+        total_matching = state.get("trial_total_matching")
+        coverage_note = state.get("coverage_note")
+
+        def _finalize(resp: SmartTableResponse) -> SmartTableResponse:
+            resp.shown = len(resp.table_data)
+            resp.total_matching = (total_matching if total_matching is not None
+                                   else len(resp.table_data) or None)
+            resp.coverage_note = coverage_note
+            return resp
+
         # No trial rows this run: either genuinely nothing was found, or the
         # agent grounded on non-trial pools only (e.g. a corporate-strategy +
         # mechanism question that never matched a specific trial -- see
@@ -2958,11 +3135,13 @@ def make_graph(model: str, verbose: bool = True, checkpointer=None):
                   f"visible here except in sources-only mode)\n{'─' * 78}")
 
         if not rows and not sources_only:
-            empty = SmartTableResponse(
-                narrative_summary="No trials were retrieved from the database, "
-                                  "so there is no evidence to answer from.",
+            empty = _finalize(SmartTableResponse(
+                narrative_summary=(
+                    coverage_note or
+                    "No trials were retrieved from the database, "
+                    "so there is no evidence to answer from."),
                 table_data=[],
-            )
+            ))
             return {"messages": [AIMessage(content=empty.narrative_summary)],
                     "result": empty}
 
@@ -3008,8 +3187,16 @@ def make_graph(model: str, verbose: bool = True, checkpointer=None):
                           f"{json.dumps(safety_payloads, indent=2)}\n\n")
             system_prompt = SOURCES_ONLY_REDUCER_SYSTEM
         else:
-            prompt = (
-                f"USER QUESTION:\n{question}\n\n"
+            prompt = f"USER QUESTION:\n{question}\n\n"
+            if (total_matching or 0) > len(rows):
+                prompt += (
+                    f"COVERAGE FACT (verified count from the database -- state "
+                    f"it in your OPENING sentence, numbers verbatim): the corpus "
+                    f"contains {total_matching} matching trials in total; the "
+                    f"{len(rows)} below are the most advanced and most recent "
+                    f"of them. Do not imply the table is exhaustive.\n\n"
+                )
+            prompt += (
                 f"EXTRACTED TRIAL ROWS (the only permitted source -- already "
                 f"validated, structured records produced by independent Map-stage "
                 f"workers; you do not have access to raw retrieval text):\n"
@@ -3035,9 +3222,9 @@ def make_graph(model: str, verbose: bool = True, checkpointer=None):
         error = outcome.get("parsing_error")
 
         if parsed is not None and error is None:
-            result = SmartTableResponse(
+            result = _finalize(SmartTableResponse(
                 narrative_summary=parsed.narrative_summary, table_data=rows
-            )
+            ))
             if verbose:
                 print(f"  ✓ narrative synthesized — {len(rows)} table rows "
                       f"carried through unchanged from the Map stage")
@@ -3052,12 +3239,12 @@ def make_graph(model: str, verbose: bool = True, checkpointer=None):
                   f"{err_text[:200]}")
 
         if retries > MAX_SYNTHESIS_RETRIES:
-            fallback = SmartTableResponse(
+            fallback = _finalize(SmartTableResponse(
                 narrative_summary="The agent was unable to produce a validly "
                                   "structured response after multiple attempts. "
                                   "Please rephrase your question and try again.",
                 table_data=rows,
-            )
+            ))
             if verbose:
                 print(f"  ✗ retries exhausted — returning deterministic fallback "
                       f"(extracted rows preserved)")
@@ -3092,45 +3279,6 @@ def make_graph(model: str, verbose: bool = True, checkpointer=None):
             if nct and nct not in seen:
                 seen.add(nct)
                 trials.append(t)
-
-        # QUESTION-AWARE POOL RERANK + junk gate. Two audited relevance
-        # failures forced this: (1) knowledge-graph results bypass the
-        # retrieval reranker entirely (they come from Cypher, not Qdrant),
-        # so a KG-heavy pool inherited the graph's ordering rather than
-        # relevance to the QUESTION; (2) overlapping tool calls can pool
-        # 100+ trials, every one of which becomes an expensive extraction
-        # worker and a table row regardless of how tangential it is. The
-        # merged pool is therefore re-scored by the cross-encoder against
-        # the user's ORIGINAL question (not the tool's paraphrase), capped
-        # at TRIAL_SEARCH_LIMIT, and trials scoring clearly irrelevant
-        # (< _POOL_MIN_RERANK) are dropped -- CRAG-lite: grade before you
-        # extract. Never drops below _POOL_MIN_KEEP rows so a weak-scoring
-        # but genuinely-only-match pool still answers. Degrades to the
-        # existing order if reranking is disabled or fails.
-        question = next(
-            (m.content for m in state["messages"] if isinstance(m, HumanMessage)), "")
-        if question and len(trials) > 1:
-            import reranker as _rr
-            if _rr.enabled():
-                def _pool_text(t: dict) -> str:
-                    iv = ", ".join((x.get("name") or "") for x in
-                                   (t.get("interventions") or []) if isinstance(x, dict))
-                    conds = ", ".join(c for c in (t.get("conditions") or [])
-                                      if isinstance(c, str))
-                    return (f"{t.get('BriefTitle') or ''}. Status: "
-                            f"{t.get('OverallStatus') or ''}. Conditions: {conds}. "
-                            f"Interventions: {iv}. {(t.get('BriefSummary') or '')[:600]}")
-                ranked = _rr.rerank(question, trials, _pool_text,
-                                    top_k=TRIAL_SEARCH_LIMIT)
-                kept = [t for t in ranked
-                        if t.get("rerank_score", 0.0) >= _POOL_MIN_RERANK]
-                if len(kept) < _POOL_MIN_KEEP:
-                    kept = ranked[:max(_POOL_MIN_KEEP, len(kept))]
-                if verbose and len(kept) != len(trials):
-                    print(f"[pool] question-aware rerank: {len(trials)} pooled "
-                          f"trials -> {len(kept)} kept "
-                          f"(gate at {_POOL_MIN_RERANK})")
-                trials = kept
 
         seen_lit: set[tuple] = set()
         literature: list[dict] = []
@@ -3189,6 +3337,116 @@ def make_graph(model: str, verbose: bool = True, checkpointer=None):
                 "sec_chunks": sec_chunks, "news_chunks": news_chunks,
                 "crl_chunks": crl_chunks}
 
+    def prepare_extraction_node(state: AgentState) -> dict:
+        """The exactness + completeness gate between retrieval and the Map
+        fanout. A REAL node (not a conditional edge) because it must write
+        state and run its network calls exactly once. Order matters:
+
+        1. Dedupe every federated pool.
+        2. BACKFILL: for each asked entity, union in fetch_trials_exact's
+           complete verified set -- so completeness never depends on which
+           tools the agent happened to call, and the TRUE total is known.
+        3. PRECISION FILTER: keep a trial iff it verifiably contains at
+           least one asked entity (boundary-regex over its text, or
+           membership in the entity's graph-verified set). Skipped
+           entirely when the question named no exact entity -- class and
+           topic queries are never filtered.
+        4. Question-aware rerank for ORDERING (+ junk gate on non-entity
+           queries), capped at POOL_MAX_TRIALS; min-keep is bounded by
+           the FILTERED pool so filtered-out lookalikes can never be
+           resurrected.
+        """
+        if state.get("has_results") is False:
+            return {}
+
+        pools = _deduped_pools(state)
+        trials = pools["trials"]
+        asked = [e for e in (state.get("asked_entities") or [])
+                 if isinstance(e, dict) and e.get("name")]
+
+        total_matching = None
+        coverage_note = None
+
+        if asked:
+            entity_patterns: list[tuple[list, str, set]] = []
+            union_verified: set = set()
+            per_entity_bits = []
+            for ent in asked:
+                aliases = _expand_entity_aliases(ent["name"],
+                                                 ent.get("kind", "drug"))
+                patterns = [p for p in (_alias_pattern(a) for a in aliases) if p]
+                exact_trials, ent_total, verified_ncts = fetch_trials_exact(
+                    aliases, ent.get("kind", "drug"), cap=POOL_MAX_TRIALS)
+                entity_patterns.append(
+                    (patterns, ent.get("kind", "drug"), verified_ncts))
+                union_verified |= verified_ncts
+                per_entity_bits.append(f"{ent['name']}: {ent_total}")
+                have = {t.get("NCTId") for t in trials}
+                trials = trials + [t for t in exact_trials
+                                   if t["NCTId"] not in have]
+
+            def _passes(t: dict) -> bool:
+                nct = t.get("NCTId")
+                return any(nct in verified or
+                           _entity_matches_trial(pats, t, kind)
+                           for pats, kind, verified in entity_patterns)
+
+            before = len(trials)
+            trials = [t for t in trials if _passes(t)]
+            total_matching = len(union_verified)
+            if verbose:
+                print(f"[prepare] entity filter "
+                      f"({', '.join(e['name'] for e in asked)}): "
+                      f"{before} pooled -> {len(trials)} verified; "
+                      f"true total {total_matching}")
+            if total_matching > POOL_MAX_TRIALS:
+                coverage_note = (
+                    f"{total_matching:,} trials in the corpus verifiably "
+                    f"involve {' / '.join(per_entity_bits)}; showing the "
+                    f"{POOL_MAX_TRIALS} most advanced and most recent "
+                    f"(latest phase first, active trials before completed "
+                    f"ones, newest registrations first).")
+            elif before > len(trials) and total_matching == 0:
+                coverage_note = (
+                    f"0 of {before} retrieved candidates verifiably contain "
+                    f"{' or '.join(e['name'] for e in asked)} -- similar-"
+                    f"looking results were excluded rather than shown.")
+
+        # Question-aware ORDERING rerank (moved here from _deduped_pools);
+        # for entity queries the pool is already exact, so the junk gate
+        # only applies when no entity filter ran (kNN neighbors present).
+        question = next(
+            (m.content for m in state["messages"] if isinstance(m, HumanMessage)), "")
+        if question and len(trials) > 1:
+            import reranker as _rr
+            if _rr.enabled():
+                def _pool_text(t: dict) -> str:
+                    iv = ", ".join((x.get("name") or "") for x in
+                                   (t.get("interventions") or [])
+                                   if isinstance(x, dict))
+                    conds = ", ".join(c for c in (t.get("conditions") or [])
+                                      if isinstance(c, str))
+                    return (f"{t.get('BriefTitle') or ''}. Status: "
+                            f"{t.get('OverallStatus') or ''}. Conditions: "
+                            f"{conds}. Interventions: {iv}. "
+                            f"{(t.get('BriefSummary') or '')[:600]}")
+                ranked = _rr.rerank(question, trials, _pool_text,
+                                    top_k=POOL_MAX_TRIALS)
+                if asked:
+                    trials = ranked  # exact pool: ordering only, no gate
+                else:
+                    kept = [t for t in ranked
+                            if t.get("rerank_score", 0.0) >= _POOL_MIN_RERANK]
+                    if len(kept) < _POOL_MIN_KEEP:
+                        kept = ranked[:max(_POOL_MIN_KEEP, len(kept))]
+                    trials = kept
+        trials = trials[:POOL_MAX_TRIALS]
+
+        pools["trials"] = trials
+        return {"prepared_pools": pools,
+                "trial_total_matching": total_matching,
+                "coverage_note": coverage_note}
+
     def continue_to_extraction(state: AgentState):
         """Conditional edge from `tools` -- the Mapper.
 
@@ -3204,7 +3462,7 @@ def make_graph(model: str, verbose: bool = True, checkpointer=None):
         if state.get("has_results") is False:
             return "no_results_fallback"
 
-        pools = _deduped_pools(state)
+        pools = state.get("prepared_pools") or _deduped_pools(state)
         trials = pools["trials"]
 
         if not trials:
@@ -3261,6 +3519,7 @@ def make_graph(model: str, verbose: bool = True, checkpointer=None):
     g.add_node("agent", agent_node)
     g.add_node("tools", tools_node)
     g.add_node("no_results_fallback", no_results_fallback_node)
+    g.add_node("prepare_extraction", prepare_extraction_node)
     g.add_node("extract_trial", extract_trial_node)
     g.add_node("synthesize_table", synthesize_table_node)
 
@@ -3275,7 +3534,8 @@ def make_graph(model: str, verbose: bool = True, checkpointer=None):
     # trial was retrieved to attach it to) goes straight to the Reducer --
     # continue_to_extraction returns whichever fits; path_map only needs to
     # cover the plain-string branches, Send objects are used directly.
-    g.add_conditional_edges("tools", continue_to_extraction,
+    g.add_edge("tools", "prepare_extraction")
+    g.add_conditional_edges("prepare_extraction", continue_to_extraction,
                             {"no_results_fallback": "no_results_fallback",
                              "synthesize_table": "synthesize_table"})
     g.add_edge("no_results_fallback", END)
@@ -4757,7 +5017,9 @@ def main() -> int:
          "retrieved_trials": [], "extracted_rows": [], "retrieved_literature": [],
          "retrieved_fda": [], "retrieved_pubmed": [], "retrieved_sec": [],
          "retrieved_news": [], "retrieved_crls": [], "retrieved_safety": [],
-         "retrieved_exclusivity": [], "retrieved_stats": []},
+         "retrieved_exclusivity": [], "retrieved_stats": [],
+         "asked_entities": [], "prepared_pools": None,
+         "trial_total_matching": None, "coverage_note": None},
         config={"recursion_limit": 25},
     )
 
@@ -4803,8 +5065,15 @@ def main() -> int:
         return out
 
     payloads = _tool_payloads()
+    # prepare_extraction's entity backfill is a legitimate retrieval source:
+    # it unions fetch_trials_exact's verified set into the pool so
+    # completeness never depends on the agent's tool choice -- those NCTs
+    # arrive via graph/Qdrant exact fetch, not a tool payload.
+    backfilled = {t.get("NCTId")
+                  for t in ((final.get("prepared_pools") or {}).get("trials") or [])
+                  if t.get("NCTId")}
     retrieved = sorted({t["NCTId"] for p in payloads for t in p.get("trials", [])
-                        if t.get("NCTId")})
+                        if t.get("NCTId")} | backfilled)
     retrieved_pmcids = sorted({c["PMCID"] for p in payloads
                               for c in p.get("pubmed_chunks", []) if c.get("PMCID")})
     retrieved_accessions = sorted({c["AccessionNumber"] for p in payloads

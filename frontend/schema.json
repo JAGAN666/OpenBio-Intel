@@ -74,7 +74,7 @@
           "type": "string"
         },
         "mechanism_or_findings": {
-          "description": "ONE analyst-grade line, not registry boilerplate: what is being tested against what comparator, in which population, and what is notable (novel target, first-line setting, registrational intent). NEVER open with 'This study/trial is designed to evaluate...' or restate that a trial evaluates safety and efficacy -- every trial does; say what makes THIS one worth an analyst's attention, using ONLY the retrieved text. If the mechanism of action is stated, name it. An unsupported claim is worse than a gap.",
+          "description": "ONE analyst-grade line in EXACTLY this shape: '<Setting/population>: <regimen> vs <comparator> \u2014 <the notable point>.' Example: 'First-line R/M HNSCC: cetuximab + pembrolizumab + chemo vs pembrolizumab + chemo \u2014 randomized Phase 3.' Another: 'PD-L1+ NSCLC post-progression: trastuzumab deruxtecan (HER2 ADC) + pembrolizumab vs platinum doublet \u2014 first ADC-IO pairing in this setting per the record.' FORBIDDEN openings (auto-fail): 'This trial', 'This study', 'This is a', anything containing 'evaluate the safety and efficacy'. Name the mechanism when the text states it. Use ONLY the retrieved text; an unsupported claim is worse than a gap.",
           "title": "Mechanism Or Findings",
           "type": "string"
         },
@@ -119,6 +119,45 @@
       },
       "title": "Table Data",
       "type": "array"
+    },
+    "total_matching": {
+      "anyOf": [
+        {
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "TRUE number of trials in the corpus verifiably matching the asked entity, when the query named one. May exceed len(table_data) when the corpus has more matches than the extraction ceiling.",
+      "title": "Total Matching"
+    },
+    "shown": {
+      "anyOf": [
+        {
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "Number of rows actually shown (len(table_data)); paired with total_matching for the 'Showing X of Y' header.",
+      "title": "Shown"
+    },
+    "coverage_note": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "Deterministic one-line explanation of the subset rule when total_matching > shown, or of an honest zero-match outcome.",
+      "title": "Coverage Note"
     }
   },
   "required": [

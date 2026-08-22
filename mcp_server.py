@@ -141,7 +141,9 @@ def run_smart_table(question: str) -> str:
          "has_results": None, "synthesis_retries": 0, "synthesis_error": None,
          "retrieved_trials": [], "extracted_rows": [], "retrieved_literature": [],
          "retrieved_fda": [], "retrieved_crls": [], "retrieved_safety": [],
-         "retrieved_exclusivity": [], "retrieved_stats": []},
+         "retrieved_exclusivity": [], "retrieved_stats": [],
+         "asked_entities": [], "prepared_pools": None,
+         "trial_total_matching": None, "coverage_note": None},
         config={"recursion_limit": 25},
     )
     result = final.get("result")

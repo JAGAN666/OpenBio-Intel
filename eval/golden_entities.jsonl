@@ -1,0 +1,29 @@
+{"case_type": "lookalike", "query_entity": "(A) T-V14", "kind": "drug", "lookalike_of": "ATV-1601", "expected_nct_ids": ["NCT04713670"], "forbidden_nct_ids": ["NCT07038369", "NCT07601425"]}
+{"case_type": "lookalike", "query_entity": "ATV-1601", "kind": "drug", "lookalike_of": "(A) T-V14", "expected_nct_ids": ["NCT07038369", "NCT07601425"], "forbidden_nct_ids": ["NCT04713670"]}
+{"case_type": "lookalike", "query_entity": "(H) T-L14", "kind": "drug", "lookalike_of": "HTL0009936", "expected_nct_ids": ["NCT04713670"], "forbidden_nct_ids": ["NCT02291783", "NCT02546310"]}
+{"case_type": "lookalike", "query_entity": "HTL0009936", "kind": "drug", "lookalike_of": "(H) T-L14", "expected_nct_ids": ["NCT02291783", "NCT02546310"], "forbidden_nct_ids": ["NCT04713670"]}
+{"case_type": "lookalike", "query_entity": "(H) T-L14", "kind": "drug", "lookalike_of": "HTL0014242", "expected_nct_ids": ["NCT04713670"], "forbidden_nct_ids": ["NCT03785054", "NCT04462263"]}
+{"case_type": "lookalike", "query_entity": "HTL0014242", "kind": "drug", "lookalike_of": "(H) T-L14", "expected_nct_ids": ["NCT03785054", "NCT04462263"], "forbidden_nct_ids": ["NCT04713670"]}
+{"case_type": "lookalike", "query_entity": "(H) T-L14", "kind": "drug", "lookalike_of": "HTL0016878", "expected_nct_ids": ["NCT04713670"], "forbidden_nct_ids": ["NCT04849286"]}
+{"case_type": "lookalike", "query_entity": "HTL0016878", "kind": "drug", "lookalike_of": "(H) T-L14", "expected_nct_ids": ["NCT04849286"], "forbidden_nct_ids": ["NCT04713670"]}
+{"case_type": "lookalike", "query_entity": "(H) T-L14", "kind": "drug", "lookalike_of": "HTL0018318", "expected_nct_ids": ["NCT04713670"], "forbidden_nct_ids": ["NCT02958696", "NCT03198624", "NCT03456349", "NCT03592862"]}
+{"case_type": "lookalike", "query_entity": "HTL0018318", "kind": "drug", "lookalike_of": "(H) T-L14", "expected_nct_ids": ["NCT02958696", "NCT03198624", "NCT03456349", "NCT03592862"], "forbidden_nct_ids": ["NCT04713670"]}
+{"case_type": "lookalike", "query_entity": "(H) T-L14", "kind": "drug", "lookalike_of": "HTL0022562", "expected_nct_ids": ["NCT04713670"], "forbidden_nct_ids": ["NCT04941989"]}
+{"case_type": "lookalike", "query_entity": "HTL0022562", "kind": "drug", "lookalike_of": "(H) T-L14", "expected_nct_ids": ["NCT04941989"], "forbidden_nct_ids": ["NCT04713670"]}
+{"case_type": "lookalike", "query_entity": "(H) T-L14", "kind": "drug", "lookalike_of": "HTL0030310", "expected_nct_ids": ["NCT04713670"], "forbidden_nct_ids": ["NCT03847207"]}
+{"case_type": "lookalike", "query_entity": "HTL0030310", "kind": "drug", "lookalike_of": "(H) T-L14", "expected_nct_ids": ["NCT03847207"], "forbidden_nct_ids": ["NCT04713670"]}
+{"case_type": "lookalike", "query_entity": "AAA517", "kind": "drug", "lookalike_of": "AAA602", "expected_nct_ids": ["NCT05849298"], "forbidden_nct_ids": ["NCT06881823"]}
+{"case_type": "lookalike", "query_entity": "AAA602", "kind": "drug", "lookalike_of": "AAA517", "expected_nct_ids": ["NCT06881823"], "forbidden_nct_ids": ["NCT05849298"]}
+{"case_type": "lookalike", "query_entity": "AAA517", "kind": "drug", "lookalike_of": "AAA617", "expected_nct_ids": ["NCT05849298"], "forbidden_nct_ids": ["NCT05803941", "NCT05939414", "NCT06004661", "NCT06531499", "NCT06894511", "NCT07047118"]}
+{"case_type": "lookalike", "query_entity": "AAA517", "kind": "drug", "lookalike_of": "AAA802", "expected_nct_ids": ["NCT05849298"], "forbidden_nct_ids": ["NCT06881823"]}
+{"case_type": "lookalike", "query_entity": "AAA802", "kind": "drug", "lookalike_of": "AAA517", "expected_nct_ids": ["NCT06881823"], "forbidden_nct_ids": ["NCT05849298"]}
+{"case_type": "lookalike", "query_entity": "AAA517", "kind": "drug", "lookalike_of": "AAA817", "expected_nct_ids": ["NCT05849298"], "forbidden_nct_ids": ["NCT06780670", "NCT06855277"]}
+{"case_type": "lookalike", "query_entity": "AAA817", "kind": "drug", "lookalike_of": "AAA517", "expected_nct_ids": ["NCT06780670", "NCT06855277"], "forbidden_nct_ids": ["NCT05849298"]}
+{"case_type": "lookalike", "query_entity": "AAA602", "kind": "drug", "lookalike_of": "AAA617", "expected_nct_ids": ["NCT06881823"], "forbidden_nct_ids": ["NCT05803941", "NCT05849298", "NCT05939414", "NCT06004661", "NCT06531499", "NCT06894511", "NCT07047118"]}
+{"case_type": "lookalike", "query_entity": "AAA617", "kind": "drug", "lookalike_of": "AAA602", "expected_nct_ids": ["NCT05803941", "NCT05849298", "NCT05939414", "NCT06004661", "NCT06531499", "NCT06894511", "NCT07047118"], "forbidden_nct_ids": ["NCT06881823"]}
+{"case_type": "brand_generic", "query_entity": "Keytruda", "kind": "drug", "alias_must_include": "pembrolizumab"}
+{"case_type": "brand_generic", "query_entity": "Wegovy", "kind": "drug", "alias_must_include": "semaglutide"}
+{"case_type": "class_query", "expect_no_entity_filter": true, "query": "Compare Phase 3 trials of GLP-1 receptor agonists for obesity"}
+{"case_type": "class_query", "expect_no_entity_filter": true, "query": "What checkpoint inhibitor trials are recruiting in NSCLC?"}
+{"case_type": "class_query", "expect_no_entity_filter": true, "query": "Show me KRAS G12C inhibitor programs in Phase 2 or later"}
+{"case_type": "class_query", "expect_no_entity_filter": true, "query": "Antibody-drug conjugate trials in breast cancer"}

@@ -35,12 +35,12 @@
           "type": "string"
         },
         "source": {
-          "description": "NCT id or SEC AccessionNumber this event is grounded in.",
+          "description": "NCT id, SEC AccessionNumber, or news SourceURL this event is grounded in.",
           "title": "Source",
           "type": "string"
         },
         "source_type": {
-          "description": "'trial' or 'sec'.",
+          "description": "'trial', 'sec', or 'news'.",
           "title": "Source Type",
           "type": "string"
         }

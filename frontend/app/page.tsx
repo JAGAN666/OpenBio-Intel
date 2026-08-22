@@ -195,7 +195,11 @@ export default function DashboardPage() {
               <BriefingCard summary={data.narrative_summary} />
             </div>
             <ExportButtons apiUrl={API_URL} data={data} />
-            <TrialsTable data={data.table_data} />
+            <TrialsTable
+              data={data.table_data}
+              totalMatching={data.total_matching ?? undefined}
+              coverageNote={data.coverage_note ?? undefined}
+            />
             <footer className="mt-8 text-xs text-slate-400 dark:text-slate-600">
               Rows flagged <span className="font-medium">Design Details Only</span> still
               carry trial design context — the badge reflects whether the source record

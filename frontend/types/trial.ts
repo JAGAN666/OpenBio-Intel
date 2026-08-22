@@ -34,7 +34,7 @@ export type Indication = string;
  */
 export type Status = string;
 /**
- * ONE analyst-grade line, not registry boilerplate: what is being tested against what comparator, in which population, and what is notable (novel target, first-line setting, registrational intent). NEVER open with 'This study/trial is designed to evaluate...' or restate that a trial evaluates safety and efficacy -- every trial does; say what makes THIS one worth an analyst's attention, using ONLY the retrieved text. If the mechanism of action is stated, name it. An unsupported claim is worse than a gap.
+ * ONE analyst-grade line in EXACTLY this shape: '<Setting/population>: <regimen> vs <comparator> — <the notable point>.' Example: 'First-line R/M HNSCC: cetuximab + pembrolizumab + chemo vs pembrolizumab + chemo — randomized Phase 3.' Another: 'PD-L1+ NSCLC post-progression: trastuzumab deruxtecan (HER2 ADC) + pembrolizumab vs platinum doublet — first ADC-IO pairing in this setting per the record.' FORBIDDEN openings (auto-fail): 'This trial', 'This study', 'This is a', anything containing 'evaluate the safety and efficacy'. Name the mechanism when the text states it. Use ONLY the retrieved text; an unsupported claim is worse than a gap.
  */
 export type MechanismOrFindings = string;
 /**
@@ -61,6 +61,18 @@ export type Sources = SourceCitation[];
  * One TrialRow for every distinct trial retrieved from the database. This array backs the frontend data grid.
  */
 export type TableData = TrialRow[];
+/**
+ * TRUE number of trials in the corpus verifiably matching the asked entity, when the query named one. May exceed len(table_data) when the corpus has more matches than the extraction ceiling.
+ */
+export type TotalMatching = number | null;
+/**
+ * Number of rows actually shown (len(table_data)); paired with total_matching for the 'Showing X of Y' header.
+ */
+export type Shown = number | null;
+/**
+ * Deterministic one-line explanation of the subset rule when total_matching > shown, or of an honest zero-match outcome.
+ */
+export type CoverageNote = string | null;
 
 /**
  * Final agent output: prose answer + machine-renderable grid.
@@ -68,6 +80,9 @@ export type TableData = TrialRow[];
 export interface SmartTableResponse {
   narrative_summary: NarrativeSummary;
   table_data: TableData;
+  total_matching?: TotalMatching;
+  shown?: Shown;
+  coverage_note?: CoverageNote;
 }
 /**
  * One row of the comparative trials grid.

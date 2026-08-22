@@ -47,6 +47,7 @@ NODE_STATUS_LABELS = {
     "intent_classifier": "IntentClassifier",
     "agent": "Agent",
     "tools": "ToolNode",
+    "prepare_extraction": "PrepareExtraction",
     "out_of_domain": "OutOfDomain",
     "no_results_fallback": "NoResultsFallback",
     "synthesize_table": "SynthesizeTable",
@@ -63,6 +64,8 @@ def _initial_research_state(query: str) -> dict:
         "retrieved_trials": [], "extracted_rows": [], "retrieved_literature": [],
         "retrieved_fda": [], "retrieved_crls": [], "retrieved_safety": [],
         "retrieved_exclusivity": [], "retrieved_stats": [],
+        "asked_entities": [], "prepared_pools": None,
+        "trial_total_matching": None, "coverage_note": None,
     }
 
 
