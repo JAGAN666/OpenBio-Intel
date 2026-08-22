@@ -57,3 +57,8 @@ output "github_actions_deploy_role_arn" {
   EOT
   value       = aws_iam_role.github_actions_deploy.arn
 }
+
+output "https_url" {
+  description = "The HTTPS front door (CloudFront) -- the URL real browsers need."
+  value       = "https://${aws_cloudfront_distribution.main.domain_name}"
+}

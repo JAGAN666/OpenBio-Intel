@@ -16,7 +16,8 @@ import type { SmartTableResponse } from "@/types/trial";
 // so `localhost:8000` would reach the wrong server and 404. Pinning IPv4
 // removes the ambiguity. Override with NEXT_PUBLIC_API_URL for deployments.
 const API_URL =
-  process.env.NEXT_PUBLIC_API_URL ?? "http://127.0.0.1:8000";
+  process.env.NEXT_PUBLIC_API_URL ??
+  (process.env.NODE_ENV === "development" ? "http://127.0.0.1:8000" : "");
 
 const EXAMPLES = [
   "Compare the mechanisms and sponsors of Phase 3 oncology trials",

@@ -13,7 +13,8 @@ import {
 } from "lucide-react";
 
 // Same IPv4-pinning reasoning as app/page.tsx -- see that file's comment.
-const API_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://127.0.0.1:8000";
+const API_URL = process.env.NEXT_PUBLIC_API_URL ??
+  (process.env.NODE_ENV === "development" ? "http://127.0.0.1:8000" : "");
 
 type Entry = { id: string; type: string; value: string; added_at: string };
 type TrialChange = {

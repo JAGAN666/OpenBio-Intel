@@ -8,7 +8,8 @@ import { runJob } from "@/lib/runJob";
 import type { LandscapeMatrix } from "@/types/landscape";
 
 // Same IPv4-pinning reasoning as app/page.tsx -- see that file's comment.
-const API_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://127.0.0.1:8000";
+const API_URL = process.env.NEXT_PUBLIC_API_URL ??
+  (process.env.NODE_ENV === "development" ? "http://127.0.0.1:8000" : "");
 
 const EXAMPLES = [
   "Non-Small Cell Lung Cancer",

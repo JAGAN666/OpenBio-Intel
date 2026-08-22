@@ -8,7 +8,8 @@ import { runJob } from "@/lib/runJob";
 import type { CatalystTimeline } from "@/types/catalysts";
 
 // Same IPv4-pinning reasoning as app/page.tsx -- see that file's comment.
-const API_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://127.0.0.1:8000";
+const API_URL = process.env.NEXT_PUBLIC_API_URL ??
+  (process.env.NODE_ENV === "development" ? "http://127.0.0.1:8000" : "");
 
 const EXAMPLES = [
   "Upcoming Phase 3 readouts in Oncology",

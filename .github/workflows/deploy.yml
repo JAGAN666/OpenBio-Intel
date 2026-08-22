@@ -202,8 +202,13 @@ jobs:
         env:
           ECR_REGISTRY: ${{ steps.ecr-login.outputs.registry }}
         run: |
+          # NEXT_PUBLIC_API_URL deliberately NOT passed anymore: production
+          # builds default to same-origin relative API paths (see
+          # app/page.tsx), which work identically behind the plain-HTTP ALB
+          # and the HTTPS CloudFront front door -- an absolute http:// URL
+          # baked in here would be blocked as mixed content on the HTTPS
+          # domain.
           docker build \
-            --build-arg NEXT_PUBLIC_API_URL="${{ vars.NEXT_PUBLIC_API_URL }}" \
             -t "$ECR_REGISTRY/$ECR_REPO_FRONTEND:${{ github.sha }}" \
             -t "$ECR_REGISTRY/$ECR_REPO_FRONTEND:latest" \
             ./frontend

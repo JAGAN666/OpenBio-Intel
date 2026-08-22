@@ -1689,3 +1689,61 @@ resource "aws_ecs_service" "worker" {
 
   tags = { Name = "${local.name}-worker-service" }
 }
+
+# =============================================================================
+# CLOUDFRONT -- HTTPS front door. ROOT CAUSE this exists for: modern
+# Chrome's HTTPS-First mode auto-upgrades plain http:// URLs, and the ALB
+# has no 443 listener (ACM cannot issue certificates for *.amazonaws.com
+# ALB names), so the browser lands on a connection-error page and the site
+# is effectively down for real users even while curl says everything is
+# healthy -- reproduced live in a real Chrome before writing this.
+# CloudFront terminates TLS on its default *.cloudfront.net certificate
+# (no custom domain needed) and forwards everything to the ALB over HTTP
+# inside AWS. Caching is DISABLED (this is an app, not a static site) and
+# all viewer headers except Host are forwarded. SSE streaming works
+# through CloudFront because responses stream uncached; the 60s origin
+# read timeout is safe against the app's 15s SSE heartbeats.
+# =============================================================================
+resource "aws_cloudfront_distribution" "main" {
+  enabled         = true
+  comment         = "${local.name} HTTPS front door"
+  price_class     = "PriceClass_100"
+  is_ipv6_enabled = true
+
+  origin {
+    domain_name = aws_lb.main.dns_name
+    origin_id   = "alb"
+    custom_origin_config {
+      http_port                = 80
+      https_port               = 443
+      origin_protocol_policy   = "http-only"
+      origin_ssl_protocols     = ["TLSv1.2"]
+      origin_read_timeout      = 60
+      origin_keepalive_timeout = 60
+    }
+  }
+
+  default_cache_behavior {
+    target_origin_id       = "alb"
+    viewer_protocol_policy = "redirect-to-https"
+    allowed_methods        = ["GET", "HEAD", "OPTIONS", "PUT", "POST", "PATCH", "DELETE"]
+    cached_methods         = ["GET", "HEAD"]
+    # AWS managed policies: CachingDisabled + AllViewerExceptHostHeader
+    # (Host must NOT be forwarded to a custom origin -- CloudFront sets it
+    # to the origin domain; the ALB routes by path, not host, so nothing
+    # depends on the viewer's Host).
+    cache_policy_id          = "4135ea2d-6df8-44a3-9df3-4b5a84be39ad"
+    origin_request_policy_id = "b689b0a8-53d0-40ab-baf2-68738e2966ac"
+    compress                 = true
+  }
+
+  restrictions {
+    geo_restriction { restriction_type = "none" }
+  }
+
+  viewer_certificate {
+    cloudfront_default_certificate = true
+  }
+
+  tags = { Name = "${local.name}-cdn" }
+}
