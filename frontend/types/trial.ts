@@ -34,6 +34,22 @@ export type MechanismOrFindings = string;
  */
 export type MechanismDescribed = boolean;
 /**
+ * One of: registry, pdf_literature, fda, pubmed, sec, news.
+ */
+export type SourceType = string;
+/**
+ * The cited document's identifier exactly as it appears in the evidence: an NCT id, PMCID, FDA application number, company/ticker, or document title.
+ */
+export type Reference = string;
+/**
+ * The excerpt's SourceURL, copied exactly, when present.
+ */
+export type Url = string | null;
+/**
+ * Evidence items that informed mechanism_or_findings BEYOND the trial registry record itself: one entry per pool excerpt actually used, copying its PMCID / SourceURL / identifier EXACTLY as it appears in the excerpt. Empty when only the registry record was used. Never invent references -- an uncited claim is better than a fabricated citation.
+ */
+export type Sources = SourceCitation[];
+/**
  * One TrialRow for every distinct trial retrieved from the database. This array backs the frontend data grid.
  */
 export type TableData = TrialRow[];
@@ -55,4 +71,17 @@ export interface TrialRow {
   interventions: Interventions;
   mechanism_or_findings: MechanismOrFindings;
   mechanism_described: MechanismDescribed;
+  sources?: Sources;
+}
+/**
+ * One clickable provenance link behind a Smart Table row -- the
+ * auditability contract: every number an analyst sees should trace to a
+ * primary document. The registry citation itself is added
+ * DETERMINISTICALLY by extract_trial_node (never trusted to the LLM);
+ * the model only cites the auxiliary evidence pools it actually fused.
+ */
+export interface SourceCitation {
+  source_type: SourceType;
+  reference: Reference;
+  url?: Url;
 }

@@ -1,5 +1,40 @@
 {
   "$defs": {
+    "SourceCitation": {
+      "description": "One clickable provenance link behind a Smart Table row -- the\nauditability contract: every number an analyst sees should trace to a\nprimary document. The registry citation itself is added\nDETERMINISTICALLY by extract_trial_node (never trusted to the LLM);\nthe model only cites the auxiliary evidence pools it actually fused.",
+      "properties": {
+        "source_type": {
+          "description": "One of: registry, pdf_literature, fda, pubmed, sec, news.",
+          "title": "Source Type",
+          "type": "string"
+        },
+        "reference": {
+          "description": "The cited document's identifier exactly as it appears in the evidence: an NCT id, PMCID, FDA application number, company/ticker, or document title.",
+          "title": "Reference",
+          "type": "string"
+        },
+        "url": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "The excerpt's SourceURL, copied exactly, when present.",
+          "title": "Url"
+        }
+      },
+      "required": [
+        "source_type",
+        "reference"
+      ],
+      "title": "SourceCitation",
+      "type": "object",
+      "additionalProperties": false
+    },
     "TrialRow": {
       "description": "One row of the comparative trials grid.",
       "properties": {
@@ -35,6 +70,14 @@
           "description": "True ONLY if the retrieved text explicitly names the mechanism of action or biological target of the primary intervention. False if the mechanism/target is not stated, even if other trial design details (like biomarkers) are present.",
           "title": "Mechanism Described",
           "type": "boolean"
+        },
+        "sources": {
+          "description": "Evidence items that informed mechanism_or_findings BEYOND the trial registry record itself: one entry per pool excerpt actually used, copying its PMCID / SourceURL / identifier EXACTLY as it appears in the excerpt. Empty when only the registry record was used. Never invent references -- an uncited claim is better than a fabricated citation.",
+          "items": {
+            "$ref": "#/$defs/SourceCitation"
+          },
+          "title": "Sources",
+          "type": "array"
         }
       },
       "required": [

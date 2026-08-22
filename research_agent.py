@@ -253,6 +253,37 @@ class TrialRow(BaseModel):
                     "stated, even if other trial design details (like "
                     "biomarkers) are present."
     )
+    sources: list["SourceCitation"] = Field(
+        default_factory=list,
+        description="Evidence items that informed mechanism_or_findings "
+                    "BEYOND the trial registry record itself: one entry per "
+                    "pool excerpt actually used, copying its PMCID / "
+                    "SourceURL / identifier EXACTLY as it appears in the "
+                    "excerpt. Empty when only the registry record was used. "
+                    "Never invent references -- an uncited claim is better "
+                    "than a fabricated citation."
+    )
+
+
+class SourceCitation(BaseModel):
+    """One clickable provenance link behind a Smart Table row -- the
+    auditability contract: every number an analyst sees should trace to a
+    primary document. The registry citation itself is added
+    DETERMINISTICALLY by extract_trial_node (never trusted to the LLM);
+    the model only cites the auxiliary evidence pools it actually fused."""
+
+    source_type: str = Field(
+        description="One of: registry, pdf_literature, fda, pubmed, sec, news."
+    )
+    reference: str = Field(
+        description="The cited document's identifier exactly as it appears "
+                    "in the evidence: an NCT id, PMCID, FDA application "
+                    "number, company/ticker, or document title."
+    )
+    url: Optional[str] = Field(
+        default=None,
+        description="The excerpt's SourceURL, copied exactly, when present."
+    )
 
 
 class SmartTableResponse(BaseModel):
@@ -1488,7 +1519,15 @@ Each trial record carries structured pharmacology: `interventions` (a list of
 {type, name}), `conditions`, and `studyType`. Use those fields as the
 authoritative source for which agents are being tested -- name the specific
 interventions rather than describing them generically, and do not rely on
-parsing drug names out of the narrative BriefSummary."""
+parsing drug names out of the narrative BriefSummary.
+
+CITATIONS (the `sources` field): for every auxiliary excerpt you actually
+fused into mechanism_or_findings, add one sources entry copying that
+excerpt's own identifier and SourceURL EXACTLY as written (PMCID for PubMed,
+SourceURL for filings/news/posters, application number for FDA records).
+Do NOT add an entry for the trial registry record itself -- that citation
+is attached automatically. Never invent or approximate a reference: leave
+sources empty rather than guessing."""
 
 # --- Reduce stage prompt: prose only, from already-extracted rows ----------
 REDUCER_SYSTEM = """You are writing the final analyst answer for a clinical
@@ -2038,10 +2077,21 @@ def make_graph(model: str, verbose: bool = True):
                                   f"({time.time() - started:.1f}s): {exc} — dropping this row")
                         return {"extracted_rows": []}
 
+        # Registry provenance is deterministic, never model-supplied: every
+        # row's primary source IS its ClinicalTrials.gov record, so build
+        # that citation from the worker's own nct_id and keep only NON-
+        # registry citations from the model (dropping any registry entry it
+        # improvised, which may carry a hallucinated URL).
+        row.sources = [SourceCitation(
+            source_type="registry", reference=nct_id,
+            url=f"https://clinicaltrials.gov/study/{nct_id}",
+        )] + [s for s in (row.sources or []) if s.source_type != "registry"]
+
         if verbose:
             print(f"  ✓ {row.nct_id}  phase={row.phase!r}  "
                   f"mechanism_described={row.mechanism_described}  "
-                  f"tier={tier}  ({time.time() - started:.1f}s)")
+                  f"tier={tier}  sources={len(row.sources)}  "
+                  f"({time.time() - started:.1f}s)")
         return {"extracted_rows": [row]}
 
     # --- node: synthesize_table (Reduce stage) -------------------------------

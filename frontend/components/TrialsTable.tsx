@@ -21,7 +21,7 @@ import {
   Target,
 } from "lucide-react";
 
-import type { TrialRow } from "@/types/trial";
+import type { SourceCitation, TrialRow } from "@/types/trial";
 
 const CTGOV = "https://clinicaltrials.gov/study/";
 
@@ -42,6 +42,57 @@ function Pill({ label }: { label: string }) {
     <span className="inline-flex max-w-[15rem] items-center truncate rounded-full border border-slate-200 bg-slate-50 px-2 py-0.5 text-xs font-medium text-slate-700 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-300">
       {label}
     </span>
+  );
+}
+
+// Short display labels per citation source_type -- the full reference is in
+// the link's title tooltip, so the chip itself stays scannable.
+const SOURCE_LABELS: Record<string, string> = {
+  registry: "CT.gov",
+  pdf_literature: "Poster/PDF",
+  fda: "FDA",
+  pubmed: "PubMed",
+  sec: "SEC",
+  news: "News",
+};
+
+/**
+ * One provenance chip per cited document. Linked when the citation carries a
+ * URL; a plain chip otherwise (the reference text still shows on hover).
+ * This is the auditability contract: an analyst should never see a value
+ * they cannot click through to a primary source.
+ */
+function SourceChips({ sources }: { sources?: SourceCitation[] }) {
+  if (!sources || sources.length === 0) {
+    return <span className="text-xs text-slate-400 dark:text-slate-600">—</span>;
+  }
+  return (
+    <div className="flex flex-wrap gap-1">
+      {sources.map((s, i) => {
+        const label = SOURCE_LABELS[s.source_type] ?? s.source_type;
+        const chip = (
+          <span className="inline-flex items-center gap-1 rounded-md border border-sky-200 bg-sky-50 px-1.5 py-0.5 text-[0.65rem] font-semibold text-sky-700 dark:border-sky-900/60 dark:bg-sky-950/40 dark:text-sky-400">
+            {label}
+          </span>
+        );
+        return s.url ? (
+          <a
+            key={`${s.source_type}-${s.reference}-${i}`}
+            href={s.url}
+            target="_blank"
+            rel="noopener noreferrer"
+            title={s.reference}
+            className="transition-opacity hover:opacity-70"
+          >
+            {chip}
+          </a>
+        ) : (
+          <span key={`${s.source_type}-${s.reference}-${i}`} title={s.reference}>
+            {chip}
+          </span>
+        );
+      })}
+    </div>
   );
 }
 
@@ -131,6 +182,11 @@ const columns: ColumnDef<typeof features, TrialRow, any>[] = [
         <p className="text-sm leading-relaxed text-slate-600 dark:text-slate-400">{info.getValue()}</p>
       </div>
     ),
+  }),
+  columnHelper.accessor("sources", {
+    header: "Sources",
+    enableSorting: false,
+    cell: (info) => <SourceChips sources={info.row.original.sources} />,
   }),
 ];
 

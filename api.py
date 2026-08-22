@@ -530,12 +530,12 @@ def catalysts(req: CatalystRequest) -> CatalystTimeline:
 # query string -- these endpoints do no LLM/Qdrant/Neo4j work at all.
 # =============================================================================
 EXCEL_HEADERS = ["NCT ID", "Sponsor", "Phase", "Interventions", "Mechanism / Findings",
-                 "Mechanism Described"]
+                 "Mechanism Described", "Sources"]
 # Column widths tuned for this schema's actual content shape (mechanism text
 # runs long, phase/sponsor are short) -- not left at openpyxl's default,
 # which would make the export technically correct but unreadable without
 # the analyst manually resizing every column first.
-EXCEL_COLUMN_WIDTHS = [14, 28, 16, 34, 70, 18]
+EXCEL_COLUMN_WIDTHS = [14, 28, 16, 34, 70, 18, 46]
 EXCEL_HEADER_FILL = "1E3A5F"  # matches the frontend's sky-900-ish header tone
 
 
@@ -568,6 +568,12 @@ def export_excel(data: SmartTableResponse) -> Response:
             ", ".join(row.interventions),
             row.mechanism_or_findings,
             "Yes" if row.mechanism_described else "No",
+            # One "reference (url)" per citation, newline-separated -- Excel
+            # renders \n inside a cell fine and analysts can copy the URLs.
+            "\n".join(
+                f"{s.reference} ({s.url})" if s.url else s.reference
+                for s in (row.sources or [])
+            ),
         ])
 
     for i, width in enumerate(EXCEL_COLUMN_WIDTHS, start=1):
