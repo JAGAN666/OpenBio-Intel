@@ -190,6 +190,89 @@ MAX_SYNTHESIS_RETRIES = 2  # Pydantic self-correction budget
 # into a trial's row, not additional rows of their own, so widening them
 # doesn't move the row count the user asked for.
 TRIAL_SEARCH_LIMIT = 60
+# Ceiling for the FINAL extraction/table pool -- distinct from
+# TRIAL_SEARCH_LIMIT (per-tool semantic breadth). Raised from the implicit
+# 60 because completeness is a product guarantee: an entity with 140 real
+# trials should show ~all of them. Above this ceiling the deterministic
+# analyst sort picks the subset and the TRUE total is surfaced in the
+# response (total_matching/shown/coverage_note).
+POOL_MAX_TRIALS = int(os.getenv("POOL_MAX_TRIALS", "150"))
+
+
+# =============================================================================
+# ENTITY EXACTNESS PRIMITIVES -- the "AABC must never match AABD" core.
+# Pure functions, unit-tested in eval/test_entity_matching.py.
+# =============================================================================
+def _norm_text(s: str) -> str:
+    """Casefold and collapse every non-alphanumeric run to one space --
+    'BMS-986278' and 'bms 986278' normalize identically."""
+    return re.sub(r"[^a-z0-9]+", " ", (s or "").casefold()).strip()
+
+
+def _alias_pattern(alias: str) -> "re.Pattern[str] | None":
+    """Compile a token-boundary regex for one alias.
+
+    The load-bearing exactness primitive: alias tokens must appear in
+    order, separated by at most 3 non-alphanumeric characters, with NO
+    alphanumeric character butting up against either end. Consequences,
+    all covered by unit tests:
+      - 'AABC' matches 'AABC' / 'aabc 200mg' but NEVER 'AABD' or 'AABCD'
+      - 'BMS 986278' == 'BMS-986278' == 'bms986278'? NO -- 'bms986278'
+        run-together has no boundary between tokens; we allow {0,3}
+        separators INCLUDING zero, so run-together DOES match. The
+        lookarounds only guard the outer edges.
+      - 'pembrolizumab' matches inside 'Pembrolizumab (MK-3475) 200mg'
+        (boundary before the strength), never inside 'pembrolizumab-like'?
+        '-like' is non-alphanumeric boundary then 'like' -- the lookahead
+        only forbids an IMMEDIATE alphanumeric, so 'pembrolizumabX' is
+        rejected but 'pembrolizumab-like' matches the alias token itself,
+        which is correct: that text IS about pembrolizumab.
+    """
+    tokens = [re.escape(t) for t in _norm_text(alias).split()]
+    if not tokens:
+        return None
+    body = r"[^a-z0-9]{0,3}".join(tokens)
+    return re.compile(r"(?<![a-z0-9])" + body + r"(?![a-z0-9])", re.IGNORECASE)
+
+
+def _alias_java_regex(aliases) -> str:
+    """One Java-flavored regex (Neo4j `=~` semantics: WHOLE-string match)
+    accepting any of the aliases with the same token-boundary guarantees
+    as _alias_pattern. Used by the KG exact-match path."""
+    bodies = []
+    for alias in aliases:
+        tokens = [re.escape(t) for t in _norm_text(alias).split()]
+        if tokens:
+            bodies.append(r"[^a-zA-Z0-9]{0,3}".join(tokens))
+    if not bodies:
+        return r"(?!)"  # matches nothing
+    alternation = "|".join(f"(?:{b})" for b in bodies)
+    return (r"(?i).*(?<![a-zA-Z0-9])(?:" + alternation + r")(?![a-zA-Z0-9]).*")
+
+
+def _trial_haystack(trial: dict) -> str:
+    """Every text field of a trial record an entity mention could live in."""
+    iv_names = " | ".join((iv.get("name") or "") for iv in
+                          (trial.get("interventions") or [])
+                          if isinstance(iv, dict))
+    conds = " | ".join(c for c in (trial.get("conditions") or [])
+                       if isinstance(c, str))
+    return " | ".join([
+        trial.get("BriefTitle") or "", iv_names, conds,
+        trial.get("LeadSponsorName") or "", trial.get("BriefSummary") or "",
+    ])
+
+
+def _entity_matches_trial(patterns: list, trial: dict,
+                          kind: str = "drug") -> bool:
+    """Does this trial verifiably contain any alias of the asked entity?
+    Companies are checked against the sponsor field only (a drug company
+    being MENTIONED in another sponsor's summary is not 'their trial')."""
+    if kind == "company":
+        hay = trial.get("LeadSponsorName") or ""
+    else:
+        hay = _trial_haystack(trial)
+    return any(p.search(hay) for p in patterns if p is not None)
 # Pool-level relevance gate (see _deduped_pools): MiniLM cross-encoder
 # scores are strongly positive for on-topic pairs and negative for
 # unrelated ones -- 0.0 is a conservative "clearly irrelevant" cutoff.
@@ -1482,7 +1565,7 @@ KG_MATCH_QUERY = """
 MATCH (t:Trial)-[:INVESTIGATES]->(d:Drug)
 OPTIONAL MATCH (d)-[:MAPPED_TO_RXNORM]->(c:Concept)
 WITH t, d, c
-WHERE toLower(d.name) CONTAINS toLower($entity)
+WHERE d.name =~ $pattern
    OR toLower(coalesce(c.standard_name, '')) = toLower($entity)
    OR ANY(b IN coalesce(c.brand_names, []) WHERE toLower(b) = toLower($entity))
 RETURN DISTINCT
@@ -1498,6 +1581,162 @@ ORDER BY
   t.id DESC
 LIMIT $limit
 """
+# Exact-fetch queries (fetch_trials_exact): alias-set variants of the KG
+# match, used by the completeness backfill. $aliases is the full alias
+# list for concept-name equality; $pattern is the boundary regex over the
+# same aliases for Drug-node names.
+EXACT_DRUG_QUERY = """
+MATCH (t:Trial)-[:INVESTIGATES]->(d:Drug)
+OPTIONAL MATCH (d)-[:MAPPED_TO_RXNORM]->(c:Concept)
+WITH t, d, c
+WHERE d.name =~ $pattern
+   OR ANY(a IN $aliases WHERE toLower(coalesce(c.standard_name, '')) = toLower(a)
+          OR ANY(b IN coalesce(c.brand_names, []) WHERE toLower(b) = toLower(a)))
+WITH DISTINCT t
+RETURN t.id AS NCTId, t.title AS BriefTitle, t.phase AS Phase,
+       t.status AS OverallStatus, t.sponsor AS LeadSponsorName,
+       t.study_type AS studyType, t.conditions AS conditions,
+       t.interventions_json AS interventions_json, t.summary AS BriefSummary
+ORDER BY
+  CASE WHEN t.status IN ['RECRUITING', 'ACTIVE_NOT_RECRUITING',
+                         'NOT_YET_RECRUITING', 'ENROLLING_BY_INVITATION']
+       THEN 0 ELSE 1 END,
+  t.id DESC
+LIMIT $limit
+"""
+
+EXACT_COMPANY_QUERY = """
+MATCH (t:Trial)
+WHERE t.sponsor =~ $pattern
+RETURN t.id AS NCTId, t.title AS BriefTitle, t.phase AS Phase,
+       t.status AS OverallStatus, t.sponsor AS LeadSponsorName,
+       t.study_type AS studyType, t.conditions AS conditions,
+       t.interventions_json AS interventions_json, t.summary AS BriefSummary
+ORDER BY
+  CASE WHEN t.status IN ['RECRUITING', 'ACTIVE_NOT_RECRUITING',
+                         'NOT_YET_RECRUITING', 'ENROLLING_BY_INVITATION']
+       THEN 0 ELSE 1 END,
+  t.id DESC
+LIMIT $limit
+"""
+
+
+def _neo4j_row_to_trial(r) -> dict:
+    try:
+        interventions = json.loads(r["interventions_json"] or "[]")
+    except (json.JSONDecodeError, TypeError):
+        interventions = []
+    return {
+        "NCTId": r["NCTId"], "BriefTitle": r["BriefTitle"],
+        "Phase": r["Phase"], "OverallStatus": r["OverallStatus"],
+        "LeadSponsorName": r["LeadSponsorName"], "studyType": r["studyType"],
+        "conditions": r["conditions"], "interventions": interventions,
+        "BriefSummary": (r["BriefSummary"] or "")[:1200],
+        "RetrievalSource": "exact_match",
+    }
+
+
+def fetch_trials_exact(aliases: list[str], kind: str = "drug",
+                       cap: int = None) -> tuple[list[dict], int]:
+    """COMPLETE, EXACT retrieval for a named entity: every trial in the
+    corpus that verifiably contains one of `aliases`, plus the TRUE total.
+
+    Dual engine -- Neo4j graph traversal (drug INVESTIGATES edges /
+    sponsor field) unioned with a Qdrant full-text filtered scroll
+    (interventionNames / LeadSponsorName MatchText) -- with EVERY
+    candidate post-verified by the boundary-regex primitives, so neither
+    engine's matching looseness can leak a lookalike. This is what makes
+    small-N entities complete (exactly N rows) and large-N entities
+    honestly counted, independent of kNN's always-fills-its-quota
+    behavior and of which tools the agent happened to call.
+
+    Returns (trials ordered live-first/newest-first capped at `cap`,
+    total_verified_matches).
+    """
+    cap = cap or POOL_MAX_TRIALS
+    patterns = [p for p in (_alias_pattern(a) for a in aliases) if p]
+    if not patterns:
+        return [], 0
+    java_pattern = _alias_java_regex(aliases)
+    FETCH_CEILING = 5000
+
+    by_nct: dict[str, dict] = {}
+    kg_ncts: set[str] = set()
+    try:
+        query = EXACT_DRUG_QUERY if kind == "drug" else EXACT_COMPANY_QUERY
+        with _graph_client().session() as session:
+            for r in session.run(query, aliases=aliases, pattern=java_pattern,
+                                 limit=FETCH_CEILING):
+                t = _neo4j_row_to_trial(r)
+                by_nct[t["NCTId"]] = t
+                # An INVESTIGATES edge (drug path) is verification in
+                # itself -- covers trials whose text uses a synonym the
+                # regex can't see.
+                if kind == "drug":
+                    kg_ncts.add(t["NCTId"])
+    except Exception as exc:  # noqa: BLE001 -- degrade to Qdrant-only
+        print(f"[exact] Neo4j unavailable, Qdrant-only: {exc}")
+
+    # Qdrant full-text supplement (feature-detects the text index by just
+    # trying; MatchText on a keyword index raises -> skip quietly).
+    field = "interventionNames" if kind == "drug" else "LeadSponsorName"
+    try:
+        flt = qmodels.Filter(should=[
+            qmodels.FieldCondition(key=field, match=qmodels.MatchText(text=a))
+            for a in aliases])
+        offset = None
+        fetched = 0
+        while fetched < FETCH_CEILING:
+            pts, offset = _client().scroll(
+                COLLECTION_NAME, scroll_filter=flt, limit=256, offset=offset,
+                with_payload=True, with_vectors=False)
+            for p in pts:
+                pl = p.payload or {}
+                nct = pl.get("NCTId")
+                if nct and nct not in by_nct:
+                    by_nct[nct] = {
+                        "NCTId": nct, "BriefTitle": pl.get("BriefTitle"),
+                        "Phase": pl.get("Phase"),
+                        "OverallStatus": pl.get("OverallStatus"),
+                        "LeadSponsorName": pl.get("LeadSponsorName"),
+                        "studyType": pl.get("studyType"),
+                        "conditions": pl.get("conditions"),
+                        "interventions": pl.get("interventions"),
+                        "BriefSummary": (pl.get("BriefSummary") or "")[:1200],
+                        "RetrievalSource": "exact_match",
+                    }
+            fetched += len(pts)
+            if offset is None or not pts:
+                break
+    except Exception as exc:  # noqa: BLE001
+        print(f"[exact] Qdrant text-filter unavailable: {exc}")
+
+    # THE GUARANTEE: regex-verify (or graph-edge-verify) every candidate.
+    verified = [t for nct, t in by_nct.items()
+                if nct in kg_ncts or _entity_matches_trial(patterns, t, kind)]
+
+    _LIVE = {"RECRUITING", "ACTIVE_NOT_RECRUITING", "NOT_YET_RECRUITING",
+             "ENROLLING_BY_INVITATION"}
+
+    def _key(t):
+        live = 0 if (t.get("OverallStatus") or "") in _LIVE else 1
+        nct_num = int(re.sub(r"\D", "", t.get("NCTId") or "") or 0)
+        return (live, -nct_num)
+
+    verified.sort(key=_key)
+    return verified[:cap], len(verified)
+
+
+KG_COUNT_QUERY = """
+MATCH (t:Trial)-[:INVESTIGATES]->(d:Drug)
+OPTIONAL MATCH (d)-[:MAPPED_TO_RXNORM]->(c:Concept)
+WITH t, d, c
+WHERE d.name =~ $pattern
+   OR toLower(coalesce(c.standard_name, '')) = toLower($entity)
+   OR ANY(b IN coalesce(c.brand_names, []) WHERE toLower(b) = toLower($entity))
+RETURN count(DISTINCT t) AS total
+"""
+
 # The MAPPED_TO_RXNORM hop is OPTIONAL MATCH, not part of the required
 # pattern -- found live on AWS: build_kg.py deliberately skips low-
 # confidence RxNorm links (MERGE_TRIAL_DRUG_ONLY), so unlicensed
@@ -1551,14 +1790,26 @@ def query_knowledge_graph(entity: str) -> str:
             against the graph, not semantic search.
     """
     try:
+        pattern = _alias_java_regex([entity])
         with _graph_client().session() as session:
-            rows = list(session.run(KG_MATCH_QUERY, entity=entity, limit=TRIAL_SEARCH_LIMIT))
+            total_matching = session.run(
+                KG_COUNT_QUERY, entity=entity, pattern=pattern
+            ).single()["total"]
+            rows = list(session.run(KG_MATCH_QUERY, entity=entity,
+                                    pattern=pattern, limit=POOL_MAX_TRIALS))
     except Exception as exc:  # surfaced to the agent as an observation
         return json.dumps({"error": f"Neo4j query failed: {exc}", "has_results": False})
 
     trials = []
     resolved = {}
+    seen_ncts: set = set()
     for r in rows:
+        # A trial reached through several Drug nodes ("ABX464" and
+        # "ABX464 50mg") produces one row per node -- collapse to one
+        # trial (rows are already ordered best-first).
+        if r["NCTId"] in seen_ncts:
+            continue
+        seen_ncts.add(r["NCTId"])
         try:
             interventions = json.loads(r["interventions_json"] or "[]")
         except (json.JSONDecodeError, TypeError):
@@ -1614,6 +1865,7 @@ def query_knowledge_graph(entity: str) -> str:
         "entity": entity,
         "resolved_concepts": [{"cui": cui, "standard_name": name}
                               for cui, name in resolved.items()],
+        "total_matching": total_matching,
         "returned": len(trials),
         "has_results": len(trials) > 0,
         "trials": trials,
