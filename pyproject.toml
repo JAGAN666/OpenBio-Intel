@@ -75,6 +75,7 @@ dependencies = [
     "psycopg2-binary>=2.9",
     "psycopg[binary]>=3.2",
     "langgraph-checkpoint-postgres>=2.0",
+    "fastmcp>=2.0",
 ]
 
 [dependency-groups]
