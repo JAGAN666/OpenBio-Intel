@@ -1668,6 +1668,9 @@ class AgentState(TypedDict):
     # LOE/patent-cliff payloads from get_exclusivity -- same treatment as
     # retrieved_safety (drug-level, sources-only reducer input).
     retrieved_exclusivity: Annotated[list[dict], operator.add]
+    # Exact-statistics payloads from query_trial_statistics (AACT SQL) --
+    # same sources-only treatment; the SQL and its rows ARE the evidence.
+    retrieved_stats: Annotated[list[dict], operator.add]
     # Per-worker input only. Set exclusively via the Send("extract_trial",
     # {"single_trial": ..., "literature": ..., "fda_records": ..., ...})
     # payload in continue_to_extraction -- no other node reads or writes
@@ -2321,6 +2324,7 @@ def make_graph(model: str, verbose: bool = True, checkpointer=None):
         new_crls: list[dict] = []
         new_safety: list[dict] = []
         new_exclusivity: list[dict] = []
+        new_stats: list[dict] = []
         for m in out["messages"]:
             if verbose:
                 _trace_tool_result(m)
@@ -2340,6 +2344,10 @@ def make_graph(model: str, verbose: bool = True, checkpointer=None):
                 new_sec.extend(payload.get("sec_chunks", []))
                 new_news.extend(payload.get("news_chunks", []))
                 new_crls.extend(payload.get("crl_chunks", []))
+                if payload.get("sql") is not None and "rows" in payload:
+                    new_stats.append({k: payload[k] for k in
+                                      ("question", "sql", "rows", "source")
+                                      if k in payload})
                 if payload.get("products") is not None and "caveats" in payload:
                     new_exclusivity.append({k: payload[k] for k in
                                             ("drug", "products", "caveats")
@@ -2370,7 +2378,8 @@ def make_graph(model: str, verbose: bool = True, checkpointer=None):
                 "retrieved_news": new_news,
                 "retrieved_crls": new_crls,
                 "retrieved_safety": new_safety,
-                "retrieved_exclusivity": new_exclusivity}
+                "retrieved_exclusivity": new_exclusivity,
+                "retrieved_stats": new_stats}
 
     # --- node: NoResultsFallback (deterministic, no LLM call) ---------------
     def no_results_fallback_node(state: AgentState) -> dict:
@@ -2594,12 +2603,14 @@ def make_graph(model: str, verbose: bool = True, checkpointer=None):
         pools = _deduped_pools(state) if not rows else None
         safety_payloads = state.get("retrieved_safety") or []
         exclusivity_payloads = state.get("retrieved_exclusivity") or []
+        stats_payloads = state.get("retrieved_stats") or []
         sources_only = (bool(pools) and any(
             pools[k] for k in (
                 "literature", "fda_records", "pubmed_chunks", "sec_chunks",
                 "news_chunks", "crl_chunks",
             )
-        )) or (not rows and bool(safety_payloads or exclusivity_payloads))
+        )) or (not rows and bool(safety_payloads or exclusivity_payloads
+                                 or stats_payloads))
 
         if verbose:
             label = f"  (retry {retries}/{MAX_SYNTHESIS_RETRIES})" if retries else ""
@@ -2640,6 +2651,13 @@ def make_graph(model: str, verbose: bool = True, checkpointer=None):
                 prompt += (f"FDA COMPLETE RESPONSE LETTER EXCERPTS "
                           f"(search_fda_crls -- FDA's own rejection letters):\n"
                           f"{json.dumps(pools['crl_chunks'], indent=2)}\n\n")
+            if stats_payloads:
+                prompt += (f"EXACT REGISTRY STATISTICS (query_trial_statistics "
+                          f"-- SQL over CTTI's AACT mirror of ALL of "
+                          f"ClinicalTrials.gov; these counts are exact, cite "
+                          f"them as 'per the AACT registry mirror' and quote "
+                          f"the numbers verbatim):\n"
+                          f"{json.dumps(stats_payloads, indent=2)}\n\n")
             if exclusivity_payloads:
                 prompt += (f"LOSS-OF-EXCLUSIVITY / PATENT DATA (get_exclusivity "
                           f"-- FDA Orange/Purple Book; listed dates ignore "
@@ -4362,7 +4380,7 @@ def main() -> int:
          "retrieved_trials": [], "extracted_rows": [], "retrieved_literature": [],
          "retrieved_fda": [], "retrieved_pubmed": [], "retrieved_sec": [],
          "retrieved_news": [], "retrieved_crls": [], "retrieved_safety": [],
-         "retrieved_exclusivity": []},
+         "retrieved_exclusivity": [], "retrieved_stats": []},
         config={"recursion_limit": 25},
     )
 
