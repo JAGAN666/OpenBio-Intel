@@ -995,6 +995,8 @@ resource "aws_ecs_task_definition" "backend" {
         # docstring -- not open), so the deployed backend would reject
         # 100% of traffic post-auth-rollout without this.
         { name = "JWT_SECRET_KEY", valueFrom = aws_secretsmanager_secret.jwt_secret_key.arn },
+        # Jobs API (enqueue/status/SSE-replay) -- see jobs.py.
+        { name = "DATABASE_URL", valueFrom = aws_secretsmanager_secret.database_url.arn },
       ]
       logConfiguration = {
         logDriver = "awslogs"
@@ -1513,4 +1515,158 @@ resource "aws_iam_role_policy" "github_actions_deploy" {
   name   = "${local.name}-github-actions-deploy"
   role   = aws_iam_role.github_actions_deploy.id
   policy = data.aws_iam_policy_document.github_actions_deploy.json
+}
+
+# =============================================================================
+# JOBS DATABASE (Postgres) -- backbone of the async job architecture:
+#   1. the job queue itself (jobs + job_events tables; SELECT ... FOR UPDATE
+#      SKIP LOCKED claiming -- see jobs.py),
+#   2. LangGraph checkpoints (resume a killed run from its last completed
+#      node instead of re-spending the LLM tokens),
+#   3. (planned) watchlist storage, migrating off its S3 JSON document.
+# One Postgres instead of the Redis+Postgres pair the original plan
+# sketched: LISTEN/NOTIFY covers the pub/sub need, SKIP LOCKED covers the
+# queue, and a single new stateful service is materially less to operate.
+# db.t4g.micro single-AZ: this is a queue/checkpoint store measured in
+# rows-per-query-run, not a data warehouse.
+# =============================================================================
+resource "aws_security_group" "jobs_db" {
+  name_prefix = "${local.name}-jobs-db-"
+  vpc_id      = aws_vpc.main.id
+
+  ingress {
+    description     = "Postgres from ECS tasks only"
+    from_port       = 5432
+    to_port         = 5432
+    protocol        = "tcp"
+    security_groups = [aws_security_group.ecs_tasks.id]
+  }
+
+  egress {
+    from_port   = 0
+    to_port     = 0
+    protocol    = "-1"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  lifecycle { create_before_destroy = true }
+  tags = { Name = "${local.name}-jobs-db-sg" }
+}
+
+resource "aws_db_subnet_group" "jobs" {
+  name       = "${local.name}-jobs"
+  subnet_ids = aws_subnet.private[*].id
+}
+
+resource "aws_db_instance" "jobs" {
+  identifier        = "${local.name}-jobs"
+  engine            = "postgres"
+  engine_version    = "16"
+  instance_class    = "db.t4g.micro"
+  allocated_storage = 20
+  storage_type      = "gp3"
+
+  db_name  = "openbio"
+  username = "openbio"
+  password = var.jobs_db_password
+
+  db_subnet_group_name   = aws_db_subnet_group.jobs.name
+  vpc_security_group_ids = [aws_security_group.jobs_db.id]
+  publicly_accessible    = false
+  multi_az               = false
+
+  backup_retention_period = 1
+  skip_final_snapshot     = true # demo/dev stack -- same policy as the secrets' recovery_window_in_days = 0
+
+  tags = { Name = "${local.name}-jobs-db" }
+}
+
+# Pre-composed connection URL as ONE secret -- same reasoning as neo4j_auth:
+# ECS injects secret values verbatim with no concatenation step, and every
+# consumer (api.py, worker.py, langgraph checkpointer) wants a single DSN.
+resource "aws_secretsmanager_secret" "database_url" {
+  name                    = "${local.name}/database-url"
+  recovery_window_in_days = 0
+}
+
+resource "aws_secretsmanager_secret_version" "database_url" {
+  secret_id = aws_secretsmanager_secret.database_url.id
+  secret_string = "postgresql://openbio:${var.jobs_db_password}@${aws_db_instance.jobs.address}:5432/openbio"
+}
+
+resource "aws_cloudwatch_log_group" "worker" {
+  name              = "/ecs/${local.name}/worker"
+  retention_in_days = 14
+}
+
+# Worker: SAME image as the backend (one build, one lockfile, zero drift),
+# different command. Runs the job-queue consumer loop -- claims queued jobs
+# with SKIP LOCKED, executes the LangGraph pipelines, streams progress
+# events into job_events, and resumes interrupted runs from their LangGraph
+# checkpoints on restart.
+resource "aws_ecs_task_definition" "worker" {
+  family                   = "${local.name}-worker"
+  requires_compatibilities = ["FARGATE"]
+  network_mode             = "awsvpc"
+  cpu                      = var.backend_cpu
+  memory                   = var.backend_memory
+  execution_role_arn       = aws_iam_role.ecs_task_execution.arn
+  task_role_arn            = aws_iam_role.ecs_task.arn
+
+  container_definitions = jsonencode([
+    {
+      name      = "worker"
+      image     = "${aws_ecr_repository.backend.repository_url}:${var.backend_image_tag}"
+      essential = true
+      command   = ["python", "worker.py"]
+      environment = [
+        { name = "QDRANT_HOST", value = "qdrant.${var.service_discovery_namespace}" },
+        { name = "QDRANT_PORT", value = "6333" },
+        { name = "NEO4J_URI", value = "bolt://neo4j.${var.service_discovery_namespace}:7687" },
+        { name = "NEO4J_USER", value = "neo4j" },
+        { name = "LLM_PROVIDER", value = var.llm_provider },
+      ]
+      secrets = [
+        { name = "ANTHROPIC_API_KEY", valueFrom = aws_secretsmanager_secret.anthropic_api_key.arn },
+        { name = "NEO4J_PASSWORD", valueFrom = aws_secretsmanager_secret.neo4j_password.arn },
+        { name = "KIMI_API_KEY", valueFrom = aws_secretsmanager_secret.kimi_api_key.arn },
+        { name = "OPENAI_API_KEY", valueFrom = aws_secretsmanager_secret.openai_api_key.arn },
+        { name = "DATABASE_URL", valueFrom = aws_secretsmanager_secret.database_url.arn },
+      ]
+      logConfiguration = {
+        logDriver = "awslogs"
+        options = {
+          "awslogs-group"         = aws_cloudwatch_log_group.worker.name
+          "awslogs-region"        = var.aws_region
+          "awslogs-stream-prefix" = "worker"
+        }
+      }
+    }
+  ])
+
+  tags = { Name = "${local.name}-worker-task" }
+}
+
+resource "aws_ecs_service" "worker" {
+  name            = "${local.name}-worker"
+  cluster         = aws_ecs_cluster.main.id
+  task_definition = aws_ecs_task_definition.worker.arn
+  desired_count   = 1
+  launch_type     = "FARGATE"
+
+  network_configuration {
+    subnets          = aws_subnet.private[*].id
+    security_groups  = [aws_security_group.ecs_tasks.id]
+    assign_public_ip = false
+  }
+
+  # Job resume on redeploy relies on at most ONE worker claiming a given
+  # job (SKIP LOCKED handles concurrency, but 100/200 keeps the old worker
+  # draining while the new one starts -- both can safely run briefly).
+  deployment_minimum_healthy_percent = 0
+  deployment_maximum_percent         = 100
+
+  depends_on = [aws_ecs_service.qdrant, aws_ecs_service.neo4j]
+
+  tags = { Name = "${local.name}-worker-service" }
 }

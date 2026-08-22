@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 import { AlertTriangle, Layers3, Loader2, Search, Sparkles } from "lucide-react";
 
 import IndicationMatrix from "@/components/IndicationMatrix";
+import { runJob } from "@/lib/runJob";
 import type { LandscapeMatrix } from "@/types/landscape";
 
 // Same IPv4-pinning reasoning as app/page.tsx -- see that file's comment.
@@ -43,26 +44,9 @@ export default function LandscapePage() {
     setData(null);
 
     try {
-      const res = await fetch(`${API_URL}/api/landscape`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ therapeutic_area: trimmed }),
-      });
-
-      if (!res.ok) {
-        // Same convention as app/page.tsx -- FastAPI's {detail: ...} shown
-        // verbatim rather than a generic failure the analyst cannot act on.
-        let detail = `HTTP ${res.status}`;
-        try {
-          const body = await res.json();
-          if (body?.detail) detail = typeof body.detail === "string" ? body.detail : JSON.stringify(body.detail);
-        } catch {
-          /* non-JSON error body */
-        }
-        throw new Error(detail);
-      }
-
-      setData((await res.json()) as LandscapeMatrix);
+      // Job-based (lib/runJob.ts): the matrix build keeps running server-
+      // side through deploys/disconnects, and reconnects recover progress.
+      setData(await runJob<LandscapeMatrix>(API_URL, "landscape", trimmed));
     } catch (err) {
       setError(
         err instanceof TypeError

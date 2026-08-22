@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 import { AlertTriangle, CalendarClock, Loader2, Search, Sparkles } from "lucide-react";
 
 import CatalystTracker from "@/components/CatalystTracker";
+import { runJob } from "@/lib/runJob";
 import type { CatalystTimeline } from "@/types/catalysts";
 
 // Same IPv4-pinning reasoning as app/page.tsx -- see that file's comment.
@@ -43,27 +44,9 @@ export default function CatalystsPage() {
     setData(null);
 
     try {
-      const res = await fetch(`${API_URL}/api/catalysts`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ query: trimmed }),
-      });
-
-      if (!res.ok) {
-        // Same convention as app/page.tsx / app/landscape/page.tsx --
-        // FastAPI's {detail: ...} shown verbatim rather than a generic
-        // failure the analyst cannot act on.
-        let detail = `HTTP ${res.status}`;
-        try {
-          const body = await res.json();
-          if (body?.detail) detail = typeof body.detail === "string" ? body.detail : JSON.stringify(body.detail);
-        } catch {
-          /* non-JSON error body */
-        }
-        throw new Error(detail);
-      }
-
-      setData((await res.json()) as CatalystTimeline);
+      // Job-based (lib/runJob.ts) -- same reliability story as the other
+      // two pages: server-side execution, reconnect-safe streaming.
+      setData(await runJob<CatalystTimeline>(API_URL, "catalysts", trimmed));
     } catch (err) {
       setError(
         err instanceof TypeError

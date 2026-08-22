@@ -2150,7 +2150,7 @@ def _invoke_ratelimit_retry(llm, msgs, *, attempts: int = 4, label: str = "",
             time.sleep(wait)
 
 
-def make_graph(model: str, verbose: bool = True):
+def make_graph(model: str, verbose: bool = True, checkpointer=None):
     llm = build_llm(model)
     llm_with_tools = llm.bind_tools(TOOLS)
     tool_node = ToolNode(TOOLS)
@@ -2871,7 +2871,11 @@ def make_graph(model: str, verbose: bool = True):
     g.add_conditional_edges("synthesize_table", route_after_synthesis,
                             {"retry": "synthesize_table", "done": END})
 
-    return g.compile()
+    # checkpointer (worker.py passes a PostgresSaver) makes runs durable:
+    # thread_id-keyed state snapshots after every super-step, so a killed
+    # run resumes instead of restarting. None (the API/CLI default) keeps
+    # the original stateless behavior.
+    return g.compile(checkpointer=checkpointer)
 
 
 # =============================================================================

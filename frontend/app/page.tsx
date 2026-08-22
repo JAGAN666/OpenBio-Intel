@@ -7,7 +7,7 @@ import BriefingCard from "@/components/BriefingCard";
 import ExportButtons from "@/components/ExportButtons";
 import ProgressPanel, { type StreamProgress, type StreamStatus } from "@/components/ProgressPanel";
 import TrialsTable from "@/components/TrialsTable";
-import { parseSSE } from "@/lib/parseSSE";
+import { runJob } from "@/lib/runJob";
 import type { SmartTableResponse } from "@/types/trial";
 
 // 127.0.0.1, not localhost, on purpose: `localhost` resolves to IPv6 (::1)
@@ -55,50 +55,19 @@ export default function DashboardPage() {
     setMapProgress(null);
 
     try {
-      const res = await fetch(`${API_URL}/api/research/stream`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ query: trimmed }),
+      // Job-based execution (see lib/runJob.ts): the query survives ALB
+      // hiccups, deploys, and even this tab closing -- the worker keeps
+      // running server-side, and EventSource's auto-reconnect + the
+      // server's full event replay recover the exact progress state.
+      const result = await runJob<SmartTableResponse>(API_URL, "research", trimmed, {
+        onReplayReset: () => {
+          setTimeline([]);
+          setMapProgress(null);
+        },
+        onStatus: (d) => setTimeline((prev) => [...prev, d as StreamStatus]),
+        onProgress: (d) => setMapProgress(d as StreamProgress),
       });
-
-      if (!res.ok || !res.body) {
-        // FastAPI surfaces problems as {detail: ...} — show it verbatim
-        // rather than a generic failure the user cannot act on. A non-2xx
-        // here means the stream never started (e.g. the 503 the agent
-        // returns before it's finished warming up) -- res.body can still
-        // be non-null on an error response, but there's nothing useful to
-        // read from it as an event stream.
-        let detail = `HTTP ${res.status}`;
-        try {
-          const body = await res.json();
-          if (body?.detail) detail = typeof body.detail === "string" ? body.detail : JSON.stringify(body.detail);
-        } catch {
-          /* non-JSON error body */
-        }
-        throw new Error(detail);
-      }
-
-      let gotResult = false;
-      for await (const msg of parseSSE(res.body)) {
-        switch (msg.event) {
-          case "status":
-            setTimeline((prev) => [...prev, JSON.parse(msg.data) as StreamStatus]);
-            break;
-          case "progress":
-            setMapProgress(JSON.parse(msg.data) as StreamProgress);
-            break;
-          case "result":
-            gotResult = true;
-            setData(JSON.parse(msg.data) as SmartTableResponse);
-            break;
-          case "error":
-            throw new Error((JSON.parse(msg.data) as { message: string }).message);
-        }
-      }
-
-      if (!gotResult) {
-        throw new Error("The agent stream ended without returning a result.");
-      }
+      setData(result);
     } catch (err) {
       setError(
         err instanceof TypeError

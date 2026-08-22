@@ -270,3 +270,14 @@ variable "frontend_desired_count" {
   type    = number
   default = 1
 }
+
+variable "jobs_db_password" {
+  # Same fail-loud philosophy as jwt_secret_key: empty default means a
+  # forgotten override fails at RDS creation rather than shipping a
+  # guessable password. Generate with:
+  #   python -c "import secrets; print(secrets.token_urlsafe(24))"
+  description = "Master password for the jobs Postgres (RDS) instance."
+  type        = string
+  sensitive   = true
+  default     = ""
+}

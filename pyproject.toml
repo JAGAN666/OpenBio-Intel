@@ -73,6 +73,8 @@ dependencies = [
     "python-dateutil>=2.9.0",
     "fastembed>=0.8.0",
     "psycopg2-binary>=2.9",
+    "psycopg[binary]>=3.2",
+    "langgraph-checkpoint-postgres>=2.0",
 ]
 
 [dependency-groups]

@@ -75,3 +75,4 @@ terraform/crash.log
 # made before `terraform init -migrate-state`, same reasoning as the
 # terraform.tfstate* rules above: can hold real infrastructure details)
 .state-backups/
+postgres_data/

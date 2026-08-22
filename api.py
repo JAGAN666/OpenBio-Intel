@@ -119,6 +119,12 @@ async def lifespan(app: FastAPI):
     _landscape_graph = make_landscape_graph(DEFAULT_MODEL, verbose=False)
     log.info("compiling catalyst tracker graph…")
     _catalyst_graph = make_catalyst_graph(verbose=False)
+    try:
+        import jobs as jobq
+        jobq.init_schema()
+        log.info("jobs schema ready (%s)", jobq.DATABASE_URL.split("@")[-1])
+    except Exception as exc:  # noqa: BLE001 -- jobs API degrades, rest works
+        log.warning("jobs database unavailable: %s", exc)
     log.info("agent ready; collection=%s", COLLECTION_NAME)
     yield
     log.info("shutting down")
@@ -733,3 +739,76 @@ def watchlist_digest() -> dict:
         return watchlist.latest_digest()
     except Exception as exc:  # noqa: BLE001
         raise HTTPException(status_code=502, detail=f"watchlist storage error: {exc}")
+
+
+# =============================================================================
+# JOBS -- async execution surface (see jobs.py/worker.py). The synchronous
+# endpoints above remain for the CLI and backward compatibility; the
+# frontend runs everything through jobs now: enqueue returns in
+# milliseconds, the worker service executes, and the SSE stream below
+# REPLAYS buffered events before following live ones -- a refreshed tab
+# reattaches mid-run losing nothing, and an ALB/deploy hiccup no longer
+# kills a 5-minute run.
+# =============================================================================
+class JobCreate(BaseModel):
+    type: str = Field(pattern="^(research|landscape|catalysts)$")
+    query: str = Field(min_length=3, max_length=2000)
+
+
+@app.post("/api/jobs")
+def job_create(req: JobCreate) -> dict:
+    import jobs as jobq
+    payload = ({"therapeutic_area": req.query} if req.type == "landscape"
+               else {"query": req.query})
+    try:
+        job_id = jobq.enqueue(req.type, payload)
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=502, detail=f"queue unavailable: {exc}")
+    log.info("job %s enqueued (%s): %r", job_id, req.type, req.query)
+    return {"job_id": job_id}
+
+
+@app.get("/api/jobs/{job_id}")
+def job_get(job_id: str) -> dict:
+    import jobs as jobq
+    row = jobq.get_job(job_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail="no such job")
+    return _jsonable(row)
+
+
+@app.get("/api/jobs/{job_id}/stream")
+async def job_stream(job_id: str) -> StreamingResponse:
+    """SSE over a job's event log: full replay first, then 1s-poll follow
+    until a terminal event. GET on purpose -- unlike the POST-based
+    /api/research/stream, a plain browser EventSource can consume this,
+    which brings free automatic reconnection."""
+    import jobs as jobq
+    if jobq.get_job(job_id) is None:
+        raise HTTPException(status_code=404, detail="no such job")
+
+    async def _events() -> AsyncIterator[str]:
+        last_id = 0
+        while True:
+            rows = await asyncio.to_thread(jobq.events_since, job_id, last_id)
+            for r in rows:
+                last_id = r["id"]
+                yield _sse(r["event"], r["data"])
+                if r["event"] in ("result", "error"):
+                    return
+            # Also terminate for jobs that finished without a terminal
+            # event row (legacy/edge) so clients don't hang forever.
+            job = await asyncio.to_thread(jobq.get_job, job_id)
+            if job and job["status"] in ("done", "failed") and not rows:
+                if job["status"] == "done" and job.get("result") is not None:
+                    yield _sse("result", job["result"])
+                else:
+                    yield _sse("error", {"message": job.get("error") or "job failed"})
+                return
+            await asyncio.sleep(1.0)
+
+    return StreamingResponse(
+        _with_heartbeat(_events()),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
