@@ -1412,6 +1412,8 @@ data "aws_iam_policy_document" "github_actions_deploy" {
       # the async-job architecture landed; the plan's own state refresh
       # needs Describe* and the apply needs full lifecycle.
       "rds:*",
+      # HTTPS front door (aws_cloudfront_distribution.main).
+      "cloudfront:*",
       "ecr:*",
       "secretsmanager:*",
       "logs:*",
