@@ -1141,6 +1141,114 @@ def search_fda_crls(query: str) -> str:
 
 
 # =============================================================================
+# TOOL -- AACT text-to-SQL: exact aggregates over ALL of ClinicalTrials.gov
+# =============================================================================
+# CTTI's AACT is a free, nightly-refreshed PostgreSQL mirror of the entire
+# ClinicalTrials.gov registry (70+ normalized tables). Vector search is the
+# wrong tool for counting/aggregation questions ("how many Phase 3 obesity
+# trials did Novo start in 2025?") -- SQL over AACT answers them EXACTLY.
+# Requires a free account at https://aact.ctti-clinicaltrials.org/ -- set
+# AACT_DB_URL=postgresql://user:pass@aact-db.ctti-clinicaltrials.org:5432/aact
+# The tool is only registered in TOOLS when that env var is present.
+AACT_DB_URL = os.getenv("AACT_DB_URL", "")
+
+# The subset of AACT's schema the SQL generator is told about -- enough for
+# the aggregate questions this tool exists for, small enough to keep the
+# generation prompt reliable.
+_AACT_SCHEMA_CARD = """
+studies(nct_id, brief_title, overall_status, phase, study_type,
+        enrollment, start_date, primary_completion_date, completion_date,
+        source, why_stopped)
+sponsors(nct_id, agency_class, lead_or_collaborator, name)
+conditions(nct_id, name)
+interventions(nct_id, intervention_type, name)
+facilities(nct_id, name, city, state, country)
+calculated_values(nct_id, number_of_facilities, actual_duration,
+                  were_results_reported, months_to_report_results)
+"""
+
+_AACT_FORBIDDEN = re.compile(
+    r"\b(insert|update|delete|drop|alter|create|grant|revoke|truncate|copy|"
+    r"vacuum|analyze|do|call|execute|prepare|set|listen|notify)\b|;", re.I)
+
+
+def _aact_guard(sql: str) -> str | None:
+    """Returns an error string if the SQL is anything but one bare SELECT."""
+    stripped = sql.strip().rstrip(";").strip()
+    if not re.match(r"^select\b", stripped, re.I):
+        return "only a single SELECT statement is allowed"
+    if _AACT_FORBIDDEN.search(stripped):
+        return "statement contains a forbidden keyword or a semicolon"
+    return None
+
+
+@tool
+def query_trial_statistics(question: str) -> str:
+    """EXACT counts and aggregates over the ENTIRE ClinicalTrials.gov
+    registry (all 500K+ trials, refreshed nightly), via SQL on CTTI's AACT
+    mirror.
+
+    Use this for QUANTITATIVE questions the semantic-search tools
+    fundamentally cannot answer exactly: "how many Phase 3 obesity trials
+    started in 2025?", "which sponsors run the most oncology trials?",
+    "average enrollment of terminated Alzheimer's trials". Do NOT use it
+    for descriptive/qualitative questions about specific trials -- the
+    search tools are better there.
+
+    Args:
+        question: The quantitative question in natural language, e.g.
+            "How many Phase 3 trials with pembrolizumab started after
+            2020, by sponsor?"
+    """
+    if not AACT_DB_URL:
+        return json.dumps({"error": "AACT is not configured (set AACT_DB_URL; "
+                                    "free registration at aact.ctti-clinicaltrials.org)",
+                           "has_results": False})
+    try:
+        sql_llm = _build_gpt4o_llm(30, model_env_var="AACT_SQL_MODEL",
+                                   default_model="gpt-4o-mini")
+        gen = sql_llm.invoke([
+            SystemMessage(content=(
+                "Write ONE PostgreSQL SELECT statement (no semicolon, no "
+                "comments, no CTE chains with writes) answering the user's "
+                "question against the AACT ClinicalTrials.gov schema below. "
+                "All tables live in the `ctgov` schema (prefix tables as "
+                "ctgov.studies etc.). Always include LIMIT 50 or lower. "
+                "Match text case-insensitively with ILIKE and %wildcards%.\n"
+                + _AACT_SCHEMA_CARD +
+                "\nReply with the SQL only -- no markdown fences, no prose."
+            )),
+            HumanMessage(content=question),
+        ])
+        sql = gen.content.strip().strip("`").removeprefix("sql").strip()
+        guard_err = _aact_guard(sql)
+        if guard_err:
+            return json.dumps({"error": f"generated SQL rejected: {guard_err}",
+                               "sql": sql, "has_results": False})
+
+        import psycopg2
+        conn = psycopg2.connect(AACT_DB_URL, connect_timeout=10,
+                                options="-c statement_timeout=20000 "
+                                        "-c default_transaction_read_only=on")
+        try:
+            with conn.cursor() as cur:
+                cur.execute(sql)
+                cols = [d[0] for d in cur.description]
+                rows = [dict(zip(cols, r)) for r in cur.fetchmany(50)]
+        finally:
+            conn.close()
+
+        return json.dumps({
+            "question": question, "sql": sql,
+            "returned": len(rows), "has_results": len(rows) > 0,
+            "rows": rows,
+            "source": "AACT (CTTI) nightly mirror of ClinicalTrials.gov",
+        }, indent=2, default=str)
+    except Exception as exc:  # surfaced to the agent as an observation
+        return json.dumps({"error": f"AACT query failed: {exc}", "has_results": False})
+
+
+# =============================================================================
 # TOOL -- loss of exclusivity / patent cliff (Neo4j RegulatoryProduct nodes)
 # =============================================================================
 LOE_QUERY = """
@@ -1462,6 +1570,11 @@ TOOLS = [search_clinical_trials, search_pdf_literature, query_knowledge_graph,
          search_fda_records, search_pubmed_literature, search_sec_filings,
          search_corporate_news, get_safety_signals, search_fda_crls,
          get_exclusivity]
+# AACT text-to-SQL only joins the roster when credentials exist -- an
+# unconfigured tool the agent can select but that always errors would just
+# burn tool rounds (free registration: aact.ctti-clinicaltrials.org).
+if AACT_DB_URL:
+    TOOLS.append(query_trial_statistics)
 
 
 # =============================================================================
@@ -1636,6 +1749,11 @@ actually match what the question is asking, not out of habit:
   or "how long is this product protected" questions. Always relay its
   caveat: listed dates ignore litigation/settlements, which move
   real-world entry.
+- query_trial_statistics (when available) -- EXACT counts/aggregates over
+  the ENTIRE ClinicalTrials.gov registry via SQL. Use it for quantitative
+  questions ("how many...", "which sponsor runs the most...", "average
+  enrollment of...") where semantic top-k search would undercount; never
+  for descriptive questions about specific trials.
 
 These are not alternatives to pick one of -- for a holistic pipeline question
 that touches trial design/entity relationships, reported results, regulatory

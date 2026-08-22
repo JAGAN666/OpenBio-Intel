@@ -72,6 +72,7 @@ dependencies = [
     "feedparser>=6.0.0",
     "python-dateutil>=2.9.0",
     "fastembed>=0.8.0",
+    "psycopg2-binary>=2.9",
 ]
 
 [dependency-groups]
