@@ -90,6 +90,7 @@ import openai
 import requests
 from dotenv import load_dotenv
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
+from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import tool
 from langgraph.graph import END, START, StateGraph
 from langgraph.graph.message import add_messages
@@ -1676,8 +1677,19 @@ def make_graph(model: str, verbose: bool = True):
         return {"messages": [reply]}
 
     # --- node: Tool Node (wrapped for tracing + grounding aggregation) -----
-    def tools_node(state: AgentState) -> dict:
-        out = tool_node.invoke(state)
+    # Takes `config` explicitly (LangGraph injects it) and forwards it to
+    # tool_node.invoke() rather than relying on tool_node picking up an
+    # ambient RunnableConfig on its own -- verified live that this ambient
+    # pickup silently breaks on the astream() (streaming) path specifically:
+    # this node runs in a thread-pool executor there (run_in_executor), and
+    # langgraph 1.2.11 (this project's own `langgraph>=1.0.0` pin floated
+    # up to it) raises `ValueError: Missing required config key 'N/A' for
+    # 'tools'` inside ToolNode.invoke() when it can't recover a config from
+    # that thread on its own. The plain (non-streaming) /api/research path
+    # never hit this because its node runs on the graph's own thread, where
+    # the ambient config happens to still be reachable.
+    def tools_node(state: AgentState, config: RunnableConfig) -> dict:
+        out = tool_node.invoke(state, config)
         round_grounded = False
         new_trials: list[dict] = []
         new_literature: list[dict] = []
