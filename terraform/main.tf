@@ -1404,6 +1404,10 @@ data "aws_iam_policy_document" "github_actions_deploy" {
       # first real plan/apply had to refresh the EFS resources already in
       # state.
       "elasticfilesystem:*",
+      # Jobs database (aws_db_instance.jobs + subnet group) -- added when
+      # the async-job architecture landed; the plan's own state refresh
+      # needs Describe* and the apply needs full lifecycle.
+      "rds:*",
       "ecr:*",
       "secretsmanager:*",
       "logs:*",
