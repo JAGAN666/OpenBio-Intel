@@ -190,6 +190,11 @@ MAX_SYNTHESIS_RETRIES = 2  # Pydantic self-correction budget
 # into a trial's row, not additional rows of their own, so widening them
 # doesn't move the row count the user asked for.
 TRIAL_SEARCH_LIMIT = 60
+# Pool-level relevance gate (see _deduped_pools): MiniLM cross-encoder
+# scores are strongly positive for on-topic pairs and negative for
+# unrelated ones -- 0.0 is a conservative "clearly irrelevant" cutoff.
+_POOL_MIN_RERANK = 0.0
+_POOL_MIN_KEEP = 10
 
 # The intent gate deliberately uses a separate, cheap/fast model rather than
 # the generator -- it is a single-purpose yes/no classifier that runs on
@@ -1466,7 +1471,11 @@ RETURN DISTINCT
   t.study_type AS studyType, t.conditions AS conditions,
   t.interventions_json AS interventions_json, t.summary AS BriefSummary,
   d.name AS MatchedDrugName, c.cui AS cui, c.standard_name AS standard_name
-ORDER BY t.id
+ORDER BY
+  CASE WHEN t.status IN ['RECRUITING', 'ACTIVE_NOT_RECRUITING',
+                         'NOT_YET_RECRUITING', 'ENROLLING_BY_INVITATION']
+       THEN 0 ELSE 1 END,
+  t.id DESC
 LIMIT $limit
 """
 # The MAPPED_TO_RXNORM hop is OPTIONAL MATCH, not part of the required
@@ -1484,8 +1493,15 @@ LIMIT $limit
 # widely-studied drug like pembrolizumab it matched 1711 trials in one call,
 # every one of which would fan out to its own extract_trial worker. Capped
 # to the same TRIAL_SEARCH_LIMIT as search_clinical_trials so the two tools
-# that can populate the trials pool share one sane ceiling; ORDER BY t.id
-# makes which subset gets returned deterministic run-to-run (there is no
+# that can populate the trials pool share one sane ceiling.
+#
+# ORDERING IS A RELEVANCE DECISION, found the hard way: the original
+# `ORDER BY t.id` (ascending, chosen only for determinism) returned the
+# OLDEST 60 of pembrolizumab's 1,705 trials -- audited live: every row
+# pre-2016, 49/56 COMPLETED/TERMINATED/WITHDRAWN. An analyst asking about
+# a drug wants the CURRENT pipeline, so: live-status trials first, then
+# newest registrations first (NCT ids are chronological). Still fully
+# deterministic (there is no
 # relevance score to rank by here -- every match equally satisfies the exact
 # entity query -- so id order is just for reproducibility, not priority).
 
@@ -2754,6 +2770,45 @@ def make_graph(model: str, verbose: bool = True, checkpointer=None):
             if nct and nct not in seen:
                 seen.add(nct)
                 trials.append(t)
+
+        # QUESTION-AWARE POOL RERANK + junk gate. Two audited relevance
+        # failures forced this: (1) knowledge-graph results bypass the
+        # retrieval reranker entirely (they come from Cypher, not Qdrant),
+        # so a KG-heavy pool inherited the graph's ordering rather than
+        # relevance to the QUESTION; (2) overlapping tool calls can pool
+        # 100+ trials, every one of which becomes an expensive extraction
+        # worker and a table row regardless of how tangential it is. The
+        # merged pool is therefore re-scored by the cross-encoder against
+        # the user's ORIGINAL question (not the tool's paraphrase), capped
+        # at TRIAL_SEARCH_LIMIT, and trials scoring clearly irrelevant
+        # (< _POOL_MIN_RERANK) are dropped -- CRAG-lite: grade before you
+        # extract. Never drops below _POOL_MIN_KEEP rows so a weak-scoring
+        # but genuinely-only-match pool still answers. Degrades to the
+        # existing order if reranking is disabled or fails.
+        question = next(
+            (m.content for m in state["messages"] if isinstance(m, HumanMessage)), "")
+        if question and len(trials) > 1:
+            import reranker as _rr
+            if _rr.enabled():
+                def _pool_text(t: dict) -> str:
+                    iv = ", ".join((x.get("name") or "") for x in
+                                   (t.get("interventions") or []) if isinstance(x, dict))
+                    conds = ", ".join(c for c in (t.get("conditions") or [])
+                                      if isinstance(c, str))
+                    return (f"{t.get('BriefTitle') or ''}. Status: "
+                            f"{t.get('OverallStatus') or ''}. Conditions: {conds}. "
+                            f"Interventions: {iv}. {(t.get('BriefSummary') or '')[:600]}")
+                ranked = _rr.rerank(question, trials, _pool_text,
+                                    top_k=TRIAL_SEARCH_LIMIT)
+                kept = [t for t in ranked
+                        if t.get("rerank_score", 0.0) >= _POOL_MIN_RERANK]
+                if len(kept) < _POOL_MIN_KEEP:
+                    kept = ranked[:max(_POOL_MIN_KEEP, len(kept))]
+                if verbose and len(kept) != len(trials):
+                    print(f"[pool] question-aware rerank: {len(trials)} pooled "
+                          f"trials -> {len(kept)} kept "
+                          f"(gate at {_POOL_MIN_RERANK})")
+                trials = kept
 
         seen_lit: set[tuple] = set()
         literature: list[dict] = []
