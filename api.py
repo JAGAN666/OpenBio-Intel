@@ -182,6 +182,7 @@ def _initial_state(query: str, tenant_id: str | None = None) -> dict:
         "synthesis_retries": 0, "synthesis_error": None,
         "retrieved_trials": [], "extracted_rows": [], "retrieved_literature": [],
         "retrieved_fda": [], "retrieved_crls": [], "retrieved_safety": [],
+        "retrieved_exclusivity": [],
     }
 
 

@@ -1141,6 +1141,66 @@ def search_fda_crls(query: str) -> str:
 
 
 # =============================================================================
+# TOOL -- loss of exclusivity / patent cliff (Neo4j RegulatoryProduct nodes)
+# =============================================================================
+LOE_QUERY = """
+MATCH (p:RegulatoryProduct)
+WHERE toLower(p.trade_name) = toLower($name)
+   OR toLower(p.ingredient) = toLower($name)
+   OR toLower(p.trade_name) CONTAINS toLower($name)
+   OR toLower(p.ingredient) CONTAINS toLower($name)
+RETURN p.source AS source, p.appl_no AS appl_no, p.trade_name AS trade_name,
+       p.ingredient AS ingredient, p.applicant AS applicant,
+       p.approval_date AS approval_date, p.patent_expiry AS patent_expiry,
+       p.exclusivity_expiry AS exclusivity_expiry, p.loe_estimate AS loe_estimate
+ORDER BY p.loe_estimate DESC
+LIMIT 25
+"""
+
+
+@tool
+def get_exclusivity(drug_name: str) -> str:
+    """PATENT CLIFF / LOSS-OF-EXCLUSIVITY intelligence for a drug, from FDA's
+    own Orange Book (small-molecule patents + regulatory exclusivity) and
+    Purple Book (biologic exclusivity).
+
+    Use this when the question concerns patent expiration, generic or
+    biosimilar entry timing, exclusivity runway, "LOE", or how long a
+    product is protected. Returns the FDA-listed products matching the
+    drug (brand/NDA and BLA), each with its latest listed patent expiry,
+    latest regulatory-exclusivity date, and loe_estimate (the max of the
+    two -- the earliest realistic date generic/biosimilar competition
+    could arrive, ignoring litigation and settlements, which can move
+    real-world entry either way; say so when summarizing).
+
+    Args:
+        drug_name: Trade name (e.g. "Keytruda") or ingredient/proper name
+            (e.g. "pembrolizumab").
+    """
+    try:
+        with _graph_client().session() as session:
+            rows = [dict(r) for r in session.run(LOE_QUERY, name=drug_name)]
+    except Exception as exc:  # surfaced to the agent as an observation
+        return json.dumps({"error": f"Neo4j LOE query failed: {exc}",
+                           "has_results": False})
+
+    return json.dumps({
+        "drug": drug_name,
+        "returned": len(rows),
+        "has_results": len(rows) > 0,
+        "products": rows,
+        "caveats": "loe_estimate is the latest FDA-listed patent/exclusivity "
+                   "date; actual generic/biosimilar entry can differ due to "
+                   "litigation, settlements, or pediatric extensions. "
+                   "Purple Book coverage is reconstructed from FDA's monthly "
+                   "change files (no full extract is published) and may miss "
+                   "biologics that haven't changed recently.",
+        "source_url": "https://www.fda.gov/drugs/drug-approvals-and-databases/"
+                      "approved-drug-products-therapeutic-equivalence-evaluations-orange-book",
+    }, indent=2)
+
+
+# =============================================================================
 # TOOL -- FAERS safety signals (live openFDA count API, no local collection)
 # =============================================================================
 FAERS_API = "https://api.fda.gov/drug/event.json"
@@ -1400,7 +1460,8 @@ def query_knowledge_graph(entity: str) -> str:
 
 TOOLS = [search_clinical_trials, search_pdf_literature, query_knowledge_graph,
          search_fda_records, search_pubmed_literature, search_sec_filings,
-         search_corporate_news, get_safety_signals, search_fda_crls]
+         search_corporate_news, get_safety_signals, search_fda_crls,
+         get_exclusivity]
 
 
 # =============================================================================
@@ -1473,6 +1534,9 @@ class AgentState(TypedDict):
     # sources-only reducer; not broadcast to Map workers (drug-level data,
     # not per-trial evidence).
     retrieved_safety: Annotated[list[dict], operator.add]
+    # LOE/patent-cliff payloads from get_exclusivity -- same treatment as
+    # retrieved_safety (drug-level, sources-only reducer input).
+    retrieved_exclusivity: Annotated[list[dict], operator.add]
     # Per-worker input only. Set exclusively via the Send("extract_trial",
     # {"single_trial": ..., "literature": ..., "fda_records": ..., ...})
     # payload in continue_to_extraction -- no other node reads or writes
@@ -1488,7 +1552,7 @@ class AgentState(TypedDict):
 
 AGENT_SYSTEM = """You are a life sciences market intelligence analyst.
 
-You have NINE tools over NINE independent sources -- pick whichever
+You have TEN tools over TEN independent sources -- pick whichever
 actually match what the question is asking, not out of habit:
 
 - query_knowledge_graph -- a Neo4j GRAPH of exact drug-entity relationships
@@ -1565,6 +1629,13 @@ actually match what the question is asking, not out of habit:
   prior CRL history, or FDA's stated objections in an area. Complements
   search_fda_records (approvals): that says what succeeded, this says why
   applications FAILED, in FDA's own words.
+- get_exclusivity -- PATENT CLIFF / loss-of-exclusivity data from FDA's
+  Orange Book (small-molecule patents + exclusivity) and Purple Book
+  (biologic exclusivity), resolved in the knowledge graph. Use it for
+  patent expiration, generic/biosimilar entry timing, exclusivity runway,
+  or "how long is this product protected" questions. Always relay its
+  caveat: listed dates ignore litigation/settlements, which move
+  real-world entry.
 
 These are not alternatives to pick one of -- for a holistic pipeline question
 that touches trial design/entity relationships, reported results, regulatory
@@ -2113,6 +2184,7 @@ def make_graph(model: str, verbose: bool = True):
         new_news: list[dict] = []
         new_crls: list[dict] = []
         new_safety: list[dict] = []
+        new_exclusivity: list[dict] = []
         for m in out["messages"]:
             if verbose:
                 _trace_tool_result(m)
@@ -2132,6 +2204,10 @@ def make_graph(model: str, verbose: bool = True):
                 new_sec.extend(payload.get("sec_chunks", []))
                 new_news.extend(payload.get("news_chunks", []))
                 new_crls.extend(payload.get("crl_chunks", []))
+                if payload.get("products") is not None and "caveats" in payload:
+                    new_exclusivity.append({k: payload[k] for k in
+                                            ("drug", "products", "caveats")
+                                            if k in payload})
                 if payload.get("signals") is not None:
                     new_safety.append({k: payload[k] for k in
                                        ("drug", "faers_reports_for_drug",
@@ -2157,7 +2233,8 @@ def make_graph(model: str, verbose: bool = True):
                 "retrieved_sec": new_sec,
                 "retrieved_news": new_news,
                 "retrieved_crls": new_crls,
-                "retrieved_safety": new_safety}
+                "retrieved_safety": new_safety,
+                "retrieved_exclusivity": new_exclusivity}
 
     # --- node: NoResultsFallback (deterministic, no LLM call) ---------------
     def no_results_fallback_node(state: AgentState) -> dict:
@@ -2380,12 +2457,13 @@ def make_graph(model: str, verbose: bool = True):
         # "no trial" means "no evidence at all."
         pools = _deduped_pools(state) if not rows else None
         safety_payloads = state.get("retrieved_safety") or []
+        exclusivity_payloads = state.get("retrieved_exclusivity") or []
         sources_only = (bool(pools) and any(
             pools[k] for k in (
                 "literature", "fda_records", "pubmed_chunks", "sec_chunks",
                 "news_chunks", "crl_chunks",
             )
-        )) or (not rows and bool(safety_payloads))
+        )) or (not rows and bool(safety_payloads or exclusivity_payloads))
 
         if verbose:
             label = f"  (retry {retries}/{MAX_SYNTHESIS_RETRIES})" if retries else ""
@@ -2426,6 +2504,11 @@ def make_graph(model: str, verbose: bool = True):
                 prompt += (f"FDA COMPLETE RESPONSE LETTER EXCERPTS "
                           f"(search_fda_crls -- FDA's own rejection letters):\n"
                           f"{json.dumps(pools['crl_chunks'], indent=2)}\n\n")
+            if exclusivity_payloads:
+                prompt += (f"LOSS-OF-EXCLUSIVITY / PATENT DATA (get_exclusivity "
+                          f"-- FDA Orange/Purple Book; listed dates ignore "
+                          f"litigation and settlements):\n"
+                          f"{json.dumps(exclusivity_payloads, indent=2)}\n\n")
             if safety_payloads:
                 prompt += (f"FAERS SAFETY SIGNALS (get_safety_signals -- live "
                           f"post-market reporting-odds-ratio screen; association, "
@@ -4094,7 +4177,8 @@ def main() -> int:
          "synthesis_retries": 0, "synthesis_error": None,
          "retrieved_trials": [], "extracted_rows": [], "retrieved_literature": [],
          "retrieved_fda": [], "retrieved_pubmed": [], "retrieved_sec": [],
-         "retrieved_news": [], "retrieved_crls": [], "retrieved_safety": []},
+         "retrieved_news": [], "retrieved_crls": [], "retrieved_safety": [],
+         "retrieved_exclusivity": []},
         config={"recursion_limit": 25},
     )
 
