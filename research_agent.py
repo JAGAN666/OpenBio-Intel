@@ -1048,9 +1048,11 @@ def _graph_client():
 #                                      attached to, in ONE Cypher query, no
 #                                      live external API call needed here.
 KG_MATCH_QUERY = """
-MATCH (t:Trial)-[:INVESTIGATES]->(d:Drug)-[:MAPPED_TO_RXNORM]->(c:Concept)
+MATCH (t:Trial)-[:INVESTIGATES]->(d:Drug)
+OPTIONAL MATCH (d)-[:MAPPED_TO_RXNORM]->(c:Concept)
+WITH t, d, c
 WHERE toLower(d.name) CONTAINS toLower($entity)
-   OR toLower(c.standard_name) = toLower($entity)
+   OR toLower(coalesce(c.standard_name, '')) = toLower($entity)
    OR ANY(b IN coalesce(c.brand_names, []) WHERE toLower(b) = toLower($entity))
 RETURN DISTINCT
   t.id AS NCTId, t.title AS BriefTitle, t.phase AS Phase,
@@ -1061,6 +1063,16 @@ RETURN DISTINCT
 ORDER BY t.id
 LIMIT $limit
 """
+# The MAPPED_TO_RXNORM hop is OPTIONAL MATCH, not part of the required
+# pattern -- found live on AWS: build_kg.py deliberately skips low-
+# confidence RxNorm links (MERGE_TRIAL_DRUG_ONLY), so unlicensed
+# development compounds (e.g. "ABX464") exist as Drug nodes with NO
+# Concept edge. With the hop mandatory, the traversal silently excluded
+# exactly the pipeline-stage assets a biopharma intelligence tool is most
+# often asked about, and the agent concluded "no results" for drugs the
+# graph actually contains. WITH...WHERE (not a bare WHERE after the
+# OPTIONAL MATCH) is load-bearing Cypher: a WHERE clause attached directly
+# to an OPTIONAL MATCH only filters the optional expansion, not the rows.
 # Verified live: unlike search_clinical_trials's kNN (which always returns at
 # most `limit` points), this Cypher traversal had NO limit at all -- for a
 # widely-studied drug like pembrolizumab it matched 1711 trials in one call,
@@ -1129,6 +1141,33 @@ def query_knowledge_graph(entity: str) -> str:
     # graph" signal here, unlike vector search's kNN (which always returns
     # its k nearest points regardless of true relevance, hence the lexical
     # grounding checks the other two tools need but this one doesn't).
+    #
+    # DETERMINISTIC FALLBACK on empty: the system prompt has always told
+    # the agent "empty graph result -> call search_clinical_trials", but
+    # verified live on AWS (Kimi orchestration) that the model routinely
+    # ignores that and concludes "no results" after the single empty tool
+    # round. Rather than depending on LLM compliance, the tool itself now
+    # runs the vector-search fallback and says so in its payload -- one
+    # tool call, guaranteed best answer across both stores.
+    if not trials:
+        try:
+            fallback = retrieve_trials(entity, limit=TRIAL_SEARCH_LIMIT)
+        except Exception as exc:  # noqa: BLE001 -- fallback is best-effort
+            fallback = []
+            print(f"[kg] vector fallback failed: {exc}")
+        for r in fallback:
+            r["RetrievalSource"] = "vector_search_fallback"
+        grounded = _is_grounded(entity, fallback) if fallback else False
+        return json.dumps({
+            "entity": entity,
+            "resolved_concepts": [],
+            "knowledge_graph_empty": True,
+            "fell_back_to_vector_search": True,
+            "returned": len(fallback),
+            "has_results": grounded,
+            "trials": fallback if grounded else [],
+        }, indent=2)
+
     return json.dumps({
         "entity": entity,
         "resolved_concepts": [{"cui": cui, "standard_name": name}
