@@ -43,6 +43,8 @@ reason (see _initial_state).
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
 import io
 import json
 import logging
@@ -335,6 +337,63 @@ async def _stream_events(query: str, tenant_id: str | None = None) -> AsyncItera
         yield _sse("error", {"message": str(exc)})
 
 
+# Seconds of stream silence before an SSE comment frame is emitted to keep
+# the connection alive. The ALB's idle timer resets only on PAYLOAD bytes
+# (TCP keep-alives do not count), and this pipeline has genuinely silent
+# multi-minute stretches -- the Map-Reduce extraction phase emits a progress
+# event per completed worker, but a single worker stuck in rate-limit
+# backoff can go quiet far longer than the ALB's original 60s default.
+# 15s is far inside any plausible idle-timeout configuration.
+_HEARTBEAT_INTERVAL_S = 15.0
+
+_STREAM_DONE = object()  # queue sentinel -- see _with_heartbeat
+
+
+async def _with_heartbeat(
+    inner: AsyncIterator[str], interval: float = _HEARTBEAT_INTERVAL_S
+) -> AsyncIterator[str]:
+    """Wrap an SSE generator so silence never exceeds `interval` seconds.
+
+    A pump task drains `inner` into a queue; this generator waits on the
+    queue with a timeout and emits an SSE comment frame (": heartbeat") on
+    every timeout. Comment frames are part of the SSE spec and ignored by
+    every client parser, so the frontend needs no changes -- their only
+    purpose is putting payload bytes on the wire so the ALB's idle timer
+    resets during long quiet stretches (Neo4j queries, rate-limited
+    extraction batches).
+
+    `inner` (_stream_events) already converts its own exceptions into SSE
+    error events, so the pump ending -- cleanly or not -- is signaled purely
+    via the _STREAM_DONE sentinel rather than exception plumbing.
+    """
+    queue: asyncio.Queue = asyncio.Queue()
+
+    async def _pump() -> None:
+        try:
+            async for item in inner:
+                await queue.put(item)
+        finally:
+            await queue.put(_STREAM_DONE)
+
+    pump_task = asyncio.create_task(_pump())
+    try:
+        while True:
+            try:
+                item = await asyncio.wait_for(queue.get(), timeout=interval)
+            except asyncio.TimeoutError:
+                yield ": heartbeat\n\n"
+                continue
+            if item is _STREAM_DONE:
+                return
+            yield item
+    finally:
+        # Client disconnects surface here as GeneratorExit -- make sure the
+        # underlying graph stream is torn down rather than left running.
+        pump_task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await pump_task
+
+
 @app.post("/api/research/stream")
 async def research_stream(req: ResearchRequest) -> StreamingResponse:
     """Same agent, same request shape as POST /api/research, but responds
@@ -355,7 +414,7 @@ async def research_stream(req: ResearchRequest) -> StreamingResponse:
 
     log.info("research stream query: %r", req.query)
     return StreamingResponse(
-        _stream_events(req.query),
+        _with_heartbeat(_stream_events(req.query)),
         media_type="text/event-stream",
         headers={
             # Disables buffering on nginx-style reverse proxies that would
