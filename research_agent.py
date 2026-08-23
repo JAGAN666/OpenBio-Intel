@@ -263,6 +263,36 @@ def _trial_haystack(trial: dict) -> str:
     ])
 
 
+def get_drug_mechanisms(names: list[str]) -> dict[str, dict]:
+    """Deterministic mechanism facts for intervention names, from the
+    drug KB build_drug_kb.py writes (Open Targets/ChEMBL + GtoPdb).
+    {name: {pref_name, stage, mechanism (phrase), mechanisms[], ref_url}}
+    -- only names the KB resolves UNAMBIGUOUSLY appear. Fail-open to {}:
+    the extraction tiers below it still run."""
+    from drug_kb import lookup_mechanisms, mechanism_phrase
+    clean = sorted({n.strip() for n in names if isinstance(n, str) and n.strip()})
+    if not clean:
+        return {}
+    try:
+        with _graph_client().session() as session:
+            facts = lookup_mechanisms(session, clean)
+    except Exception as exc:  # noqa: BLE001
+        print(f"[drug_kb] unavailable: {exc}")
+        return {}
+    out = {}
+    for name, f in facts.items():
+        phrase = mechanism_phrase(f)
+        ref = next((m.get("ref_url") for m in f.get("mechanisms") or []
+                    if m.get("ref_url")), None)
+        out[name] = {
+            "pref_name": f.get("pref_name"), "stage": f.get("stage"),
+            "chembl_id": f.get("chembl_id"), "mechanism": phrase,
+            "mechanisms": f.get("mechanisms") or [], "ref_url": ref,
+            "source": ((f.get("mechanisms") or [{}])[0].get("source") or ""),
+        }
+    return out
+
+
 def _expand_entity_aliases(name: str, kind: str = "drug") -> list[str]:
     """Alias set for an exact entity: the verbatim ask plus its RxNorm
     standard name and brand names (brand <-> generic bridging). Sibling
@@ -2377,6 +2407,7 @@ class AgentState(TypedDict):
     sec_chunks: Optional[list[dict]]
     news_chunks: Optional[list[dict]]
     crl_chunks: Optional[list[dict]]
+    drug_facts: Optional[dict]
 
 
 AGENT_SYSTEM = """You are a life sciences market intelligence analyst.
@@ -3831,7 +3862,20 @@ def make_graph(model: str, verbose: bool = True, checkpointer=None):
                     trials = kept
         trials = trials[:POOL_MAX_TRIALS]
 
+        # Drug KB facts for every studied agent in the final pool -- ONE
+        # batched lookup here, broadcast to all workers as a shared pool
+        # (so the mechanism column is set deterministically, never by
+        # recall). Keyed by the registry intervention name as written.
+        studied_names = sorted({n for t in trials
+                                for n in _studied_intervention_names(t)})
+        drug_facts = get_drug_mechanisms(studied_names) if studied_names else {}
+        if verbose and studied_names:
+            hit = sum(1 for n in studied_names if drug_facts.get(n, {}).get("mechanism"))
+            print(f"[drug_kb] {len(studied_names)} studied agents -> "
+                  f"{len(drug_facts)} resolved, {hit} with a mechanism")
+
         pools["trials"] = trials
+        pools["drug_facts"] = drug_facts
         return {"prepared_pools": pools,
                 "trial_total_matching": total_matching,
                 "coverage_note": coverage_note,
@@ -3891,13 +3935,19 @@ def make_graph(model: str, verbose: bool = True, checkpointer=None):
             for t in trials:
                 print(f"    • Send(\"extract_trial\", single_trial={t.get('NCTId')})")
 
+        drug_facts = pools.get("drug_facts") or {}
         return [Send("extract_trial",
                      {"single_trial": t, "literature": pools["literature"],
                       "fda_records": pools["fda_records"],
                       "pubmed_chunks": pools["pubmed_chunks"],
                       "sec_chunks": pools["sec_chunks"],
                       "news_chunks": pools["news_chunks"],
-                      "crl_chunks": pools["crl_chunks"]})
+                      "crl_chunks": pools["crl_chunks"],
+                      # only this trial's agents -- keeps every worker's
+                      # prompt small and its facts unambiguous
+                      "drug_facts": {n: drug_facts[n]
+                                     for n in _studied_intervention_names(t)
+                                     if n in drug_facts}})
                 for t in trials]
 
     def route_after_synthesis(state: AgentState) -> str:
