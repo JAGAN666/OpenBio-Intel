@@ -54,6 +54,8 @@ from pathlib import Path
 import requests
 import spacy
 from neo4j import GraphDatabase
+
+import ct_schema
 from scispacy.linking import EntityLinker  # noqa: F401  (registers scispacy_linker)
 
 try:
@@ -102,13 +104,15 @@ def load_studies(path: Path) -> list[dict]:
 
 
 def drug_interventions(study: dict) -> list[dict]:
-    """DRUG-type interventions only -- RxNorm covers drugs, not the
-    PROCEDURE-type entries (biospecimen collection, CT scans, ...) that
-    ClinicalTrials.gov mixes into the same interventions array."""
+    """Drug-like interventions only (DRUG, BIOLOGICAL, COMBINATION_PRODUCT,
+    GENETIC, ...) -- RxNorm covers drugs, not the PROCEDURE-type entries
+    (biospecimen collection, CT scans, ...) that ClinicalTrials.gov mixes
+    into the same interventions array. BIOLOGICAL matters: monoclonal
+    antibodies are routinely registered under it, and excluding them left
+    antibody trials without INVESTIGATES edges."""
     proto = study.get("protocolSection", {})
-    raw = proto.get("armsInterventionsModule", {}).get("interventions", []) or []
-    return [iv for iv in raw if isinstance(iv, dict) and iv.get("type") == "DRUG"
-            and (iv.get("name") or "").strip()]
+    ivs = ct_schema.extract_interventions(proto)
+    return [iv for iv in ivs if iv["type"] in ct_schema.STUDIED_TYPES]
 
 
 # =============================================================================
@@ -191,14 +195,22 @@ def fetch_brand_names(standard_name: str, session: requests.Session) -> list[str
 MERGE_TRIAL_DRUG_CONCEPT = """
 MERGE (t:Trial {id: $nct_id})
 SET t.title = $title, t.phase = $phase, t.status = $status,
-    t.sponsor = $sponsor, t.study_type = $study_type,
+    t.sponsor = $sponsor, t.collaborators = $collaborators,
+    t.study_type = $study_type,
     t.conditions = $conditions, t.summary = $summary,
     t.intervention_names = $intervention_names,
-    t.interventions_json = $interventions_json
+    t.studied_intervention_names = $studied_intervention_names,
+    t.interventions_json = $interventions_json,
+    t.arm_groups_json = $arm_groups_json,
+    t.start_date = $start_date, t.start_year = $start_year,
+    t.primary_completion_date = $primary_completion_date,
+    t.enrollment = $enrollment, t.countries = $countries,
+    t.design_json = $design_json
 
 MERGE (d:Drug {name: $drug_name})
 SET d.other_names = $other_names
-MERGE (t)-[:INVESTIGATES]->(d)
+MERGE (t)-[i:INVESTIGATES]->(d)
+SET i.role = $role
 
 WITH t, d
 WHERE $cui IS NOT NULL
@@ -213,65 +225,33 @@ MERGE (d)-[:MAPPED_TO_RXNORM]->(c)
 MERGE_TRIAL_DRUG_ONLY = """
 MERGE (t:Trial {id: $nct_id})
 SET t.title = $title, t.phase = $phase, t.status = $status,
-    t.sponsor = $sponsor, t.study_type = $study_type,
+    t.sponsor = $sponsor, t.collaborators = $collaborators,
+    t.study_type = $study_type,
     t.conditions = $conditions, t.summary = $summary,
     t.intervention_names = $intervention_names,
-    t.interventions_json = $interventions_json
+    t.studied_intervention_names = $studied_intervention_names,
+    t.interventions_json = $interventions_json,
+    t.arm_groups_json = $arm_groups_json,
+    t.start_date = $start_date, t.start_year = $start_year,
+    t.primary_completion_date = $primary_completion_date,
+    t.enrollment = $enrollment, t.countries = $countries,
+    t.design_json = $design_json
 
 MERGE (d:Drug {name: $drug_name})
 SET d.other_names = $other_names
-MERGE (t)-[:INVESTIGATES]->(d)
+MERGE (t)-[i:INVESTIGATES]->(d)
+SET i.role = $role
 """
 
 
-# Duplicated from fetch_and_embed_trials.py rather than imported -- that
-# module pulls in the main project's dependencies (qdrant-client etc.),
-# which are not (and should not be) installed in this script's isolated
-# .venv-kg. fetch_and_embed_trials.py keeps its own copy of this same table
-# for the identical reason, so this mirrors an established pattern, not a
-# new one. Kept in sync manually; it's ClinicalTrials.gov's fixed enum, not
-# something that changes often.
-PHASE_LABELS = {
-    "EARLY_PHASE1": "Early Phase 1",
-    "PHASE1": "Phase 1",
-    "PHASE2": "Phase 2",
-    "PHASE3": "Phase 3",
-    "PHASE4": "Phase 4",
-    "NA": "Not Applicable",
-}
+PHASE_LABELS = ct_schema.PHASE_LABELS
 
 
-def trial_params(study: dict, all_intervention_names: list[str],
-                 interventions_trimmed: list[dict]) -> dict:
-    proto = study.get("protocolSection", {})
-    ident = proto.get("identificationModule", {})
-    raw_phases = proto.get("designModule", {}).get("phases", []) or []
-    return {
-        "nct_id": ident.get("nctId"),
-        "title": ident.get("briefTitle") or "(no title)",
-        # A Neo4j list-of-strings property, normalised to the SAME human
-        # form ("Phase 3") search_clinical_trials's Qdrant payload uses --
-        # not a joined string of raw API enum tokens ("PHASE3"). Both tools'
-        # trial dicts need matching shapes: query_knowledge_graph's results
-        # flow into the exact same Map-Reduce pipeline (tools_node's generic
-        # "trials" accumulation, extract_trial's TrialRow extraction) as
-        # search_clinical_trials's, with no shape-specific branching.
-        "phase": [PHASE_LABELS.get(p, p) for p in raw_phases],
-        "status": proto.get("statusModule", {}).get("overallStatus"),
-        "sponsor": proto.get("sponsorCollaboratorsModule", {})
-                        .get("leadSponsor", {}).get("name"),
-        "study_type": proto.get("designModule", {}).get("studyType"),
-        "conditions": proto.get("conditionsModule", {}).get("conditions", []) or [],
-        "summary": (proto.get("descriptionModule", {}).get("briefSummary") or "")[:2000],
-        "intervention_names": all_intervention_names,
-        # Neo4j properties can't hold a nested list-of-maps, so the
-        # {type, name} shape search_clinical_trials returns (trimmed the
-        # same way fetch_and_embed_trials.py's extract_interventions() trims
-        # it -- type + name only, no description/armGroupLabels noise) is
-        # JSON-serialised here and deserialised back in
-        # query_knowledge_graph, rather than approximated or dropped.
-        "interventions_json": json.dumps(interventions_trimmed),
-    }
+def trial_params(payload: dict) -> dict:
+    """Neo4j Trial-node properties from the SAME canonical payload the
+    Qdrant writers use, so both stores agree on every field (phase in the
+    human form, trimmed interventions JSON, dates, roles)."""
+    return ct_schema.trial_kg_props(payload)
 
 
 def ingest(driver, studies: list[dict], resolved: dict[str, dict | None],
@@ -292,29 +272,19 @@ def ingest(driver, studies: list[dict], resolved: dict[str, dict | None],
             drugs = drug_interventions(study)
             if not drugs:
                 continue
-
-            raw_interventions = (study.get("protocolSection", {})
-                                      .get("armsInterventionsModule", {})
-                                      .get("interventions", []) or [])
-            all_names = [iv["name"] for iv in raw_interventions
-                        if isinstance(iv, dict) and iv.get("name")]
-            # Trimmed to {type, name} -- the exact shape
-            # fetch_and_embed_trials.py's extract_interventions() produces
-            # and search_clinical_trials returns, so query_knowledge_graph's
-            # results are indistinguishable in shape from that tool's.
-            interventions_trimmed = [
-                {"type": (iv.get("type") or "UNKNOWN").strip(), "name": iv["name"]}
-                for iv in raw_interventions
-                if isinstance(iv, dict) and (iv.get("name") or "").strip()
-            ]
-            params = trial_params(study, all_names, interventions_trimmed)
+            payload = ct_schema.build_trial_payload(study, None)
+            if payload is None:
+                continue  # no summary: the Qdrant side skips it too
+            params = trial_params(payload)
+            roles = payload.get("interventionRoles") or {}
             stats["trials"] += 1
 
             for iv in drugs:
                 name = iv["name"]
                 match = resolved.get(name)
                 row = dict(params, drug_name=name,
-                          other_names=iv.get("otherNames") or [])
+                          other_names=iv.get("otherNames") or [],
+                          role=roles.get(name, "studied"))
                 stats["drug_edges"] += 1
                 if match:
                     row["cui"] = match["cui"]

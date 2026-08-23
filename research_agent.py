@@ -1198,19 +1198,7 @@ def retrieve_trials(
     results = []
     for h in hits:
         meta = h.payload or {}
-        results.append({
-            "NCTId": meta.get("NCTId"),
-            "BriefTitle": meta.get("BriefTitle"),
-            "Phase": meta.get("Phase"),
-            "OverallStatus": meta.get("OverallStatus"),
-            "LeadSponsorName": meta.get("LeadSponsorName"),
-            # --- structured pharmacology (payload enrichment) -------------
-            "studyType": meta.get("studyType"),
-            "conditions": meta.get("conditions"),
-            "interventions": meta.get("interventions"),
-            "score": round(float(h.score), 4),
-            "BriefSummary": (meta.get("BriefSummary") or "")[:1200],
-        })
+        results.append(_trial_from_payload(meta, score=h.score))
 
     def _rerank_text(r: dict) -> str:
         iv = ", ".join((x.get("name") or "") for x in (r.get("interventions") or [])
@@ -1925,19 +1913,31 @@ def _graph_client():
 #                                      Concept node "pembrolizumab" is
 #                                      attached to, in ONE Cypher query, no
 #                                      live external API call needed here.
+_KG_TRIAL_RETURN = """
+RETURN t.id AS NCTId, t.title AS BriefTitle, t.phase AS Phase,
+       t.status AS OverallStatus, t.sponsor AS LeadSponsorName,
+       t.collaborators AS collaborators,
+       t.study_type AS studyType, t.conditions AS conditions,
+       t.interventions_json AS interventions_json,
+       t.arm_groups_json AS arm_groups_json,
+       t.studied_intervention_names AS studiedInterventionNames,
+       t.start_date AS StartDate, t.start_year AS StartYear,
+       t.primary_completion_date AS PrimaryCompletionDate,
+       t.enrollment AS Enrollment, t.countries AS countries,
+       t.design_json AS design_json, t.summary AS BriefSummary
+"""
+
+
 KG_MATCH_QUERY = """
-MATCH (t:Trial)-[:INVESTIGATES]->(d:Drug)
+MATCH (t:Trial)-[i:INVESTIGATES]->(d:Drug)
+WHERE coalesce(i.role, 'studied') = 'studied'
 OPTIONAL MATCH (d)-[:MAPPED_TO_RXNORM]->(c:Concept)
 WITH t, d, c
 WHERE d.name =~ $pattern
    OR toLower(coalesce(c.standard_name, '')) = toLower($entity)
    OR ANY(b IN coalesce(c.brand_names, []) WHERE toLower(b) = toLower($entity))
-RETURN DISTINCT
-  t.id AS NCTId, t.title AS BriefTitle, t.phase AS Phase,
-  t.status AS OverallStatus, t.sponsor AS LeadSponsorName,
-  t.study_type AS studyType, t.conditions AS conditions,
-  t.interventions_json AS interventions_json, t.summary AS BriefSummary,
-  d.name AS MatchedDrugName, c.cui AS cui, c.standard_name AS standard_name
+WITH DISTINCT t, d, c
+""" + _KG_TRIAL_RETURN.replace("RETURN ", "RETURN d.name AS MatchedDrugName, c.cui AS cui, c.standard_name AS standard_name, ", 1) + """
 ORDER BY
   CASE WHEN t.status IN ['RECRUITING', 'ACTIVE_NOT_RECRUITING',
                          'NOT_YET_RECRUITING', 'ENROLLING_BY_INVITATION']
@@ -1949,18 +1949,20 @@ LIMIT $limit
 # match, used by the completeness backfill. $aliases is the full alias
 # list for concept-name equality; $pattern is the boundary regex over the
 # same aliases for Drug-node names.
+# `i.role` is written by the v3 migration: only edges whose role is
+# 'studied' (or unset, on pre-migration graphs) count -- a placebo-arm
+# Drug node ("Placebo matching X") or an active-comparator arm is not a
+# trial OF that drug.
 EXACT_DRUG_QUERY = """
-MATCH (t:Trial)-[:INVESTIGATES]->(d:Drug)
+MATCH (t:Trial)-[i:INVESTIGATES]->(d:Drug)
+WHERE coalesce(i.role, 'studied') = 'studied'
 OPTIONAL MATCH (d)-[:MAPPED_TO_RXNORM]->(c:Concept)
 WITH t, d, c
 WHERE d.name =~ $pattern
    OR ANY(a IN $aliases WHERE toLower(coalesce(c.standard_name, '')) = toLower(a)
           OR ANY(b IN coalesce(c.brand_names, []) WHERE toLower(b) = toLower(a)))
 WITH DISTINCT t
-RETURN t.id AS NCTId, t.title AS BriefTitle, t.phase AS Phase,
-       t.status AS OverallStatus, t.sponsor AS LeadSponsorName,
-       t.study_type AS studyType, t.conditions AS conditions,
-       t.interventions_json AS interventions_json, t.summary AS BriefSummary
+""" + _KG_TRIAL_RETURN + """
 ORDER BY
   CASE WHEN t.status IN ['RECRUITING', 'ACTIVE_NOT_RECRUITING',
                          'NOT_YET_RECRUITING', 'ENROLLING_BY_INVITATION']
@@ -1972,10 +1974,7 @@ LIMIT $limit
 EXACT_COMPANY_QUERY = """
 MATCH (t:Trial)
 WHERE t.sponsor =~ $pattern
-RETURN t.id AS NCTId, t.title AS BriefTitle, t.phase AS Phase,
-       t.status AS OverallStatus, t.sponsor AS LeadSponsorName,
-       t.study_type AS studyType, t.conditions AS conditions,
-       t.interventions_json AS interventions_json, t.summary AS BriefSummary
+""" + _KG_TRIAL_RETURN + """
 ORDER BY
   CASE WHEN t.status IN ['RECRUITING', 'ACTIVE_NOT_RECRUITING',
                          'NOT_YET_RECRUITING', 'ENROLLING_BY_INVITATION']
@@ -1985,19 +1984,61 @@ LIMIT $limit
 """
 
 
-def _neo4j_row_to_trial(r) -> dict:
-    try:
-        interventions = json.loads(r["interventions_json"] or "[]")
-    except (json.JSONDecodeError, TypeError):
-        interventions = []
-    return {
-        "NCTId": r["NCTId"], "BriefTitle": r["BriefTitle"],
-        "Phase": r["Phase"], "OverallStatus": r["OverallStatus"],
-        "LeadSponsorName": r["LeadSponsorName"], "studyType": r["studyType"],
-        "conditions": r["conditions"], "interventions": interventions,
-        "BriefSummary": (r["BriefSummary"] or "")[:1200],
-        "RetrievalSource": "exact_match",
+# Text caps for the trial dict that travels through state into every
+# extraction worker's prompt -- generous enough to carry mechanism text
+# (intervention descriptions, detailed description) and the eligibility
+# block the verifier needs, bounded so a 150-row fanout stays affordable.
+_SUMMARY_CAP = 1200
+_DETAILED_CAP = 2500
+_ELIGIBILITY_CAP = 2000
+# v3 payload keys copied verbatim onto the trial dict (missing on
+# pre-migration points -- every consumer .get()s them).
+_TRIAL_V3_KEYS = ("OfficialTitle", "Acronym", "collaborators", "keywords",
+                  "armGroups", "interventionRoles", "studiedInterventionNames",
+                  "StartDate", "StartYear", "PrimaryCompletionDate",
+                  "CompletionDate", "Enrollment", "designInfo",
+                  "PrimaryOutcomes", "countries", "Sex", "MinimumAge",
+                  "MaximumAge")
+
+
+def _trial_from_payload(pl: dict, source: str | None = None,
+                        score: float | None = None) -> dict:
+    """One trial dict shape for every retrieval path (kNN, KG, exact)."""
+    t = {
+        "NCTId": pl.get("NCTId"), "BriefTitle": pl.get("BriefTitle"),
+        "Phase": pl.get("Phase"), "OverallStatus": pl.get("OverallStatus"),
+        "LeadSponsorName": pl.get("LeadSponsorName"),
+        "studyType": pl.get("studyType"), "conditions": pl.get("conditions"),
+        "interventions": pl.get("interventions"),
+        "BriefSummary": (pl.get("BriefSummary") or "")[:_SUMMARY_CAP],
     }
+    for k in _TRIAL_V3_KEYS:
+        if pl.get(k) not in (None, [], {}, ""):
+            t[k] = pl[k]
+    if pl.get("DetailedDescription"):
+        t["DetailedDescription"] = pl["DetailedDescription"][:_DETAILED_CAP]
+    if pl.get("EligibilityCriteria"):
+        t["EligibilityCriteria"] = pl["EligibilityCriteria"][:_ELIGIBILITY_CAP]
+    if score is not None:
+        t["score"] = round(float(score), 4)
+    if source:
+        t["RetrievalSource"] = source
+    return t
+
+
+
+
+def _neo4j_row_to_trial(r, source: str = "exact_match") -> dict:
+    def _load(key):
+        try:
+            return json.loads(r[key] or "null") if key in r.keys() else None
+        except (json.JSONDecodeError, TypeError):
+            return None
+    pl = {k: r[k] for k in r.keys()}
+    pl["interventions"] = _load("interventions_json") or []
+    pl["armGroups"] = _load("arm_groups_json") or []
+    pl["designInfo"] = _load("design_json") or {}
+    return _trial_from_payload(pl, source)
 
 
 EXACT_FETCH_CEILING = 5000
@@ -2049,37 +2090,35 @@ def fetch_trials_exact(aliases: list[str], kind: str = "drug",
 
     # Qdrant full-text supplement (feature-detects the text index by just
     # trying; MatchText on a keyword index raises -> skip quietly).
-    field = "interventionNames" if kind == "drug" else "LeadSponsorName"
-    try:
-        flt = qmodels.Filter(should=[
-            qmodels.FieldCondition(key=field, match=qmodels.MatchText(text=a))
-            for a in aliases])
-        offset = None
-        fetched = 0
-        while fetched < FETCH_CEILING:
-            pts, offset = _client().scroll(
-                COLLECTION_NAME, scroll_filter=flt, limit=256, offset=offset,
-                with_payload=True, with_vectors=False)
-            for p in pts:
-                pl = p.payload or {}
-                nct = pl.get("NCTId")
-                if nct and nct not in by_nct:
-                    by_nct[nct] = {
-                        "NCTId": nct, "BriefTitle": pl.get("BriefTitle"),
-                        "Phase": pl.get("Phase"),
-                        "OverallStatus": pl.get("OverallStatus"),
-                        "LeadSponsorName": pl.get("LeadSponsorName"),
-                        "studyType": pl.get("studyType"),
-                        "conditions": pl.get("conditions"),
-                        "interventions": pl.get("interventions"),
-                        "BriefSummary": (pl.get("BriefSummary") or "")[:1200],
-                        "RetrievalSource": "exact_match",
-                    }
-            fetched += len(pts)
-            if offset is None or not pts:
-                break
-    except Exception as exc:  # noqa: BLE001
-        print(f"[exact] Qdrant text-filter unavailable: {exc}")
+    # v3 collections index studiedInterventionNames (studied arms only);
+    # pre-migration ones only interventionNames -- try the exact field
+    # first, fall back to the broad one (the regex gate below still
+    # verifies every candidate either way).
+    field_sets = ([["studiedInterventionNames", "interventionNames"],
+                   ["interventionNames"]] if kind == "drug"
+                  else [["LeadSponsorName", "collaborators"], ["LeadSponsorName"]])
+    for fields in field_sets:
+        try:
+            flt = qmodels.Filter(should=[
+                qmodels.FieldCondition(key=f, match=qmodels.MatchText(text=a))
+                for f in fields for a in aliases])
+            offset = None
+            fetched = 0
+            while fetched < FETCH_CEILING:
+                pts, offset = _client().scroll(
+                    COLLECTION_NAME, scroll_filter=flt, limit=256, offset=offset,
+                    with_payload=True, with_vectors=False)
+                for p in pts:
+                    pl = p.payload or {}
+                    nct = pl.get("NCTId")
+                    if nct and nct not in by_nct:
+                        by_nct[nct] = _trial_from_payload(pl, "exact_match")
+                fetched += len(pts)
+                if offset is None or not pts:
+                    break
+            break  # this field set worked
+        except Exception as exc:  # noqa: BLE001 -- try the narrower set
+            print(f"[exact] Qdrant text-filter on {fields} unavailable: {exc}")
 
     # THE GUARANTEE: every candidate must verifiably STUDY the entity --
     # regex over studied-intervention/title tiers, or a graph INVESTIGATES
@@ -2182,24 +2221,10 @@ def query_knowledge_graph(entity: str) -> str:
         if r["NCTId"] in seen_ncts:
             continue
         seen_ncts.add(r["NCTId"])
-        try:
-            interventions = json.loads(r["interventions_json"] or "[]")
-        except (json.JSONDecodeError, TypeError):
-            interventions = []
-        trials.append({
-            "NCTId": r["NCTId"],
-            "BriefTitle": r["BriefTitle"],
-            "Phase": r["Phase"],
-            "OverallStatus": r["OverallStatus"],
-            "LeadSponsorName": r["LeadSponsorName"],
-            "studyType": r["studyType"],
-            "conditions": r["conditions"],
-            "interventions": interventions,
-            "BriefSummary": r["BriefSummary"],
-            "MappedConcept": {"cui": r["cui"], "standard_name": r["standard_name"],
-                              "matched_drug_name": r["MatchedDrugName"]},
-            "RetrievalSource": "knowledge_graph",
-        })
+        t = _neo4j_row_to_trial(r, source="knowledge_graph")
+        t["MappedConcept"] = {"cui": r["cui"], "standard_name": r["standard_name"],
+                              "matched_drug_name": r["MatchedDrugName"]}
+        trials.append(t)
         resolved[r["cui"]] = r["standard_name"]
 
     # Exact graph traversal, not kNN -- zero rows IS a genuine "not in the
