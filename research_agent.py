@@ -326,16 +326,198 @@ def _expand_entity_aliases(name: str, kind: str = "drug") -> list[str]:
     return sorted(aliases)[:12]
 
 
-def _entity_matches_trial(patterns: list, trial: dict,
-                          kind: str = "drug") -> bool:
-    """Does this trial verifiably contain any alias of the asked entity?
-    Companies are checked against the sponsor field only (a drug company
-    being MENTIONED in another sponsor's summary is not 'their trial')."""
+_PLACEBO_NAME_RE = re.compile(
+    r"^(?:placebos?|matching placebo|placebo matching|sham|vehicle|dummy)"
+    r"(?:[\s,:-]+.*)?$", re.IGNORECASE)
+_STUDIED_INTERVENTION_TYPES = {"DRUG", "BIOLOGICAL", "COMBINATION_PRODUCT",
+                               "GENETIC", "UNKNOWN", ""}
+
+
+def _studied_intervention_names(trial: dict) -> list[str]:
+    """Names of the agents this trial actually STUDIES -- drug-like
+    interventions minus placebo/sham arms. Prefers the ETL-derived
+    `studiedInterventionNames` payload key (richer: includes otherNames)
+    and falls back to the legacy interventions list."""
+    pre = trial.get("studiedInterventionNames")
+    if isinstance(pre, list) and pre:
+        return [n for n in pre if isinstance(n, str)]
+    out = []
+    for iv in (trial.get("interventions") or []):
+        if not isinstance(iv, dict):
+            continue
+        name = (iv.get("name") or "").strip()
+        itype = (iv.get("type") or "").upper()
+        if not name or _PLACEBO_NAME_RE.match(name):
+            continue
+        if itype not in _STUDIED_INTERVENTION_TYPES:
+            continue
+        out.append(name)
+        for other in (iv.get("otherNames") or []):
+            if isinstance(other, str) and other.strip():
+                out.append(other.strip())
+    return out
+
+
+def _entity_match_tier(patterns: list, trial: dict,
+                       kind: str = "drug") -> str | None:
+    """WHERE an asked entity appears in a trial, strongest tier first:
+    'studied' (a studied intervention name), 'title', 'mentioned' (summary,
+    conditions, or sponsor text), or None. The distinction is the product
+    fix for "previously treated with pembrolizumab" trials passing as
+    pembrolizumab trials: a mention is evidence the drug is discussed, not
+    that it is investigated. Companies are checked against the sponsor
+    field only (a drug company being MENTIONED in another sponsor's summary
+    is not 'their trial')."""
+    pats = [p for p in patterns if p is not None]
+    if not pats:
+        return None
     if kind == "company":
-        hay = trial.get("LeadSponsorName") or ""
-    else:
-        hay = _trial_haystack(trial)
-    return any(p.search(hay) for p in patterns if p is not None)
+        hay = " | ".join([trial.get("LeadSponsorName") or ""] +
+                         [c for c in (trial.get("collaborators") or [])
+                          if isinstance(c, str)])
+        return "studied" if any(p.search(hay) for p in pats) else None
+    studied = " | ".join(_studied_intervention_names(trial))
+    if any(p.search(studied) for p in pats):
+        return "studied"
+    arm_text = " | ".join(
+        (a.get("label") or "") + " " + " ".join(a.get("interventionNames") or [])
+        for a in (trial.get("armGroups") or []) if isinstance(a, dict))
+    title = " | ".join([trial.get("BriefTitle") or "",
+                        trial.get("OfficialTitle") or "", arm_text])
+    if any(p.search(title) for p in pats):
+        return "title"
+    if any(p.search(_trial_haystack(trial)) for p in pats):
+        return "mentioned"
+    return None
+
+
+def _entity_matches_trial(patterns: list, trial: dict,
+                          kind: str = "drug", studied_only: bool = True) -> bool:
+    """Does this trial verifiably INVESTIGATE any alias of the asked entity?
+    With studied_only (the default), a hit only in the summary/conditions
+    ('mentioned' tier) is rejected -- the trial talks about the drug but
+    does not study it."""
+    tier = _entity_match_tier(patterns, trial, kind)
+    if tier is None:
+        return False
+    return tier in ("studied", "title") if studied_only else True
+
+
+# --- structured query constraints (phase/status/sponsor/...) ----------------
+_LIVE_STATUSES = {"RECRUITING", "ACTIVE_NOT_RECRUITING", "NOT_YET_RECRUITING",
+                  "ENROLLING_BY_INVITATION"}
+_STATUS_ALIASES = {
+    "live": _LIVE_STATUSES, "active": _LIVE_STATUSES, "ongoing": _LIVE_STATUSES,
+    "open": _LIVE_STATUSES,
+    "recruiting": {"RECRUITING"}, "not_yet_recruiting": {"NOT_YET_RECRUITING"},
+    "completed": {"COMPLETED"}, "terminated": {"TERMINATED"},
+    "withdrawn": {"WITHDRAWN"}, "suspended": {"SUSPENDED"},
+    "active_not_recruiting": {"ACTIVE_NOT_RECRUITING"},
+    "enrolling_by_invitation": {"ENROLLING_BY_INVITATION"},
+    "unknown": {"UNKNOWN"},
+}
+_COMBO_WORDS_RE = re.compile(
+    r"\b(?:combined with|in combination with|combination of|plus|together with|"
+    r"co-?administered with|added to|on top of)\b|\s\+\s", re.IGNORECASE)
+
+
+def _status_set(raw: list[str] | None) -> set[str]:
+    out: set[str] = set()
+    for s in (raw or []):
+        key = re.sub(r"[^a-z]+", "_", (s or "").casefold()).strip("_")
+        if key in _STATUS_ALIASES:
+            out |= _STATUS_ALIASES[key]
+        elif key:
+            out.add(key.upper())
+    return out
+
+
+def _trial_year(trial: dict) -> int | None:
+    raw = trial.get("StartDate") or ""
+    m = re.match(r"(\d{4})", str(raw))
+    return int(m.group(1)) if m else None
+
+
+def _apply_query_constraints(trials: list[dict], constraints: dict | None
+                             ) -> tuple[list[dict], list[str], list[str]]:
+    """Deterministic constraint enforcement over a trial pool.
+
+    Returns (kept, enforced, unenforceable): which constraint kinds were
+    applied as hard filters, and which were asked but could not be checked
+    because the records carry no such field (reported honestly in the
+    coverage note rather than silently ignored). Indication, class/target,
+    setting and design are NOT enforced here -- their vocabulary varies
+    too much for regex; they go to the verifier stage.
+    """
+    c = constraints or {}
+    enforced: list[str] = []
+    unenforceable: list[str] = []
+    kept = list(trials)
+
+    phases = {_normalise_phase(p) for p in (c.get("phases") or [])} - {None}
+    if phases:
+        enforced.append("phase")
+        kept = [t for t in kept
+                if phases & set(t.get("Phase") or [])]
+
+    statuses = _status_set(c.get("statuses"))
+    if statuses:
+        enforced.append("status")
+        kept = [t for t in kept
+                if (t.get("OverallStatus") or "").upper() in statuses]
+
+    sponsors = [p for p in (_alias_pattern(s) for s in
+                            (c.get("sponsor_names") or [])) if p]
+    if sponsors:
+        enforced.append("sponsor")
+        kept = [t for t in kept
+                if _entity_match_tier(sponsors, t, "company") == "studied"]
+
+    y_min, y_max = c.get("start_year_min"), c.get("start_year_max")
+    if y_min or y_max:
+        if any(t.get("StartDate") for t in kept):
+            enforced.append("start_year")
+            kept = [t for t in kept
+                    if (yr := _trial_year(t)) is not None
+                    and (not y_min or yr >= int(y_min))
+                    and (not y_max or yr <= int(y_max))]
+        else:
+            unenforceable.append("start_year")
+
+    countries = {(x or "").casefold() for x in (c.get("countries") or [])} - {""}
+    if countries:
+        if any(t.get("countries") for t in kept):
+            enforced.append("country")
+            kept = [t for t in kept
+                    if countries & {(x or "").casefold()
+                                    for x in (t.get("countries") or [])}]
+        else:
+            unenforceable.append("country")
+
+    return kept, enforced, unenforceable
+
+
+def _trial_analyst_key(t: dict) -> tuple:
+    """Sort key for raw trial dicts: latest phase first, live before dead,
+    newest registration first (NCT ids are chronological)."""
+    phases = [p for p in (t.get("Phase") or []) if isinstance(p, str)]
+    phase_rank = max((_PHASE_RANK_DICT.get(p, 0) for p in phases), default=0)
+    live = 1 if (t.get("OverallStatus") or "").upper() in _LIVE_STATUSES else 0
+    nct_num = int(re.sub(r"\D", "", t.get("NCTId") or "") or 0)
+    return (-phase_rank, -live, -nct_num)
+
+
+_PHASE_RANK_DICT = {"Early Phase 1": 1, "Phase 1": 1, "Phase 2": 2,
+                    "Phase 3": 3, "Phase 4": 4}
+
+
+def _combination_required(question: str, constraints: dict | None,
+                          n_drug_entities: int) -> bool:
+    """AND semantics across asked drugs: explicit classifier flag, or
+    combination wording in the question with 2+ named drugs."""
+    if (constraints or {}).get("combination_required"):
+        return True
+    return n_drug_entities >= 2 and bool(_COMBO_WORDS_RE.search(question or ""))
 # Pool-level relevance gate (see _deduped_pools): MiniLM cross-encoder
 # scores are strongly positive for on-topic pairs and negative for
 # unrelated ones -- 0.0 is a conservative "clearly irrelevant" cutoff.
@@ -528,6 +710,66 @@ class ExactEntity(BaseModel):
     )
 
 
+class QueryConstraints(BaseModel):
+    """Every STRUCTURED constraint the user stated, beyond named entities.
+    Phase, status, sponsor, year and country are enforced as hard
+    deterministic filters over trial records; indication, class/target,
+    setting and design are verified per candidate by a later stage. Emit
+    ONLY what the user actually said -- an empty list means 'no
+    constraint', never a guess."""
+
+    phases: list[str] = Field(
+        default_factory=list,
+        description="Trial phases the user asked for, e.g. ['Phase 3'] or "
+                    "['Phase 2', 'Phase 3'] for 'Phase 2/3' or 'late-stage'. "
+                    "Empty when no phase is mentioned.")
+    statuses: list[str] = Field(
+        default_factory=list,
+        description="Recruitment statuses asked for. Use CT.gov values "
+                    "(RECRUITING, ACTIVE_NOT_RECRUITING, NOT_YET_RECRUITING, "
+                    "COMPLETED, TERMINATED, WITHDRAWN, SUSPENDED) or the "
+                    "convenience word 'live' for ongoing/active/current "
+                    "trials. Empty when not mentioned.")
+    indications: list[str] = Field(
+        default_factory=list,
+        description="Diseases/conditions named, verbatim, e.g. "
+                    "['non-small cell lung cancer'], ['obesity'].")
+    drug_classes: list[str] = Field(
+        default_factory=list,
+        description="Drug classes or modalities named, e.g. ['GLP-1 "
+                    "receptor agonist'], ['ADC'], ['checkpoint inhibitor'].")
+    targets: list[str] = Field(
+        default_factory=list,
+        description="Molecular targets named, e.g. ['KRAS G12C'], ['PD-1'].")
+    sponsor_names: list[str] = Field(
+        default_factory=list,
+        description="Companies the trials must be SPONSORED by (e.g. "
+                    "'Merck trials of X' -> ['Merck']). Also listed in "
+                    "exact_entities with kind company.")
+    combination_required: bool = Field(
+        default=False,
+        description="True when the user asks for trials studying the named "
+                    "drugs TOGETHER ('X plus Y', 'X combined with Y', 'X + "
+                    "Y'). False for 'X or Y' or a single drug.")
+    setting: Optional[str] = Field(
+        default=None,
+        description="Population/line-of-therapy qualifier verbatim, e.g. "
+                    "'first-line', 'post-progression', 'pediatric', "
+                    "'treatment-naive'. None when absent.")
+    start_year_min: Optional[int] = Field(
+        default=None, description="Earliest start year asked for, if any.")
+    start_year_max: Optional[int] = Field(
+        default=None, description="Latest start year asked for, if any.")
+    countries: list[str] = Field(
+        default_factory=list,
+        description="Countries/regions asked for, e.g. ['United States'].")
+    design: list[str] = Field(
+        default_factory=list,
+        description="Design qualifiers asked for: 'randomized', "
+                    "'open-label', 'placebo-controlled', 'double-blind', "
+                    "'single-arm'. Empty when absent.")
+
+
 class IntentClassification(BaseModel):
     """Input-guardrail verdict from the IntentClassifier node."""
 
@@ -552,6 +794,13 @@ class IntentClassification(BaseModel):
                     "whether something is a class or a product, emit NOTHING "
                     "-- a missed filter is safe, a wrong filter destroys the "
                     "answer."
+    )
+    constraints: QueryConstraints = Field(
+        default_factory=QueryConstraints,
+        description="Structured constraints stated in the question (phase, "
+                    "status, indication, class, target, sponsor, "
+                    "combination, setting, years, countries, design). "
+                    "Leave fields empty when the user did not state them."
     )
 
 
@@ -1751,8 +2000,12 @@ def _neo4j_row_to_trial(r) -> dict:
     }
 
 
+EXACT_FETCH_CEILING = 5000
+
+
 def fetch_trials_exact(aliases: list[str], kind: str = "drug",
-                       cap: int = None) -> tuple[list[dict], int, set]:
+                       cap: int = None, constraints: dict | None = None
+                       ) -> tuple[list[dict], int, set]:
     """COMPLETE, EXACT retrieval for a named entity: every trial in the
     corpus that verifiably contains one of `aliases`, plus the TRUE total.
 
@@ -1766,14 +2019,16 @@ def fetch_trials_exact(aliases: list[str], kind: str = "drug",
     behavior and of which tools the agent happened to call.
 
     Returns (trials ordered live-first/newest-first capped at `cap`,
-    total_verified_matches).
+    total_verified_matches, verified_nct_ids). When `constraints` carry
+    phase/status/sponsor filters they are applied BEFORE counting, so the
+    TRUE total is the total for the question as asked.
     """
     cap = cap or POOL_MAX_TRIALS
     patterns = [p for p in (_alias_pattern(a) for a in aliases) if p]
     if not patterns:
-        return [], 0
+        return [], 0, set()
     java_pattern = _alias_java_regex(aliases)
-    FETCH_CEILING = 5000
+    FETCH_CEILING = EXACT_FETCH_CEILING
 
     by_nct: dict[str, dict] = {}
     kg_ncts: set[str] = set()
@@ -1826,15 +2081,17 @@ def fetch_trials_exact(aliases: list[str], kind: str = "drug",
     except Exception as exc:  # noqa: BLE001
         print(f"[exact] Qdrant text-filter unavailable: {exc}")
 
-    # THE GUARANTEE: regex-verify (or graph-edge-verify) every candidate.
+    # THE GUARANTEE: every candidate must verifiably STUDY the entity --
+    # regex over studied-intervention/title tiers, or a graph INVESTIGATES
+    # edge (which covers synonyms the regex can't see). A summary-only
+    # mention is not enough.
     verified = [t for nct, t in by_nct.items()
                 if nct in kg_ncts or _entity_matches_trial(patterns, t, kind)]
-
-    _LIVE = {"RECRUITING", "ACTIVE_NOT_RECRUITING", "NOT_YET_RECRUITING",
-             "ENROLLING_BY_INVITATION"}
+    if constraints:
+        verified, _, _ = _apply_query_constraints(verified, constraints)
 
     def _key(t):
-        live = 0 if (t.get("OverallStatus") or "") in _LIVE else 1
+        live = 0 if (t.get("OverallStatus") or "") in _LIVE_STATUSES else 1
         nct_num = int(re.sub(r"\D", "", t.get("NCTId") or "") or 0)
         return (live, -nct_num)
 
@@ -2079,6 +2336,8 @@ class AgentState(TypedDict):
     # the prepared post-filter pools, and the TRUE match total + coverage
     # note surfaced in the response.
     asked_entities: Optional[list]
+    asked_constraints: Optional[dict]
+    enforced_constraints: Optional[list]
     prepared_pools: Optional[dict]
     trial_total_matching: Optional[int]
     coverage_note: Optional[str]
@@ -2459,7 +2718,31 @@ ALSO extract exact_entities -- SPECIFIC named drugs or companies only:
 - 'Phase 3 oncology trials' -> []  (topic)
 Copy names VERBATIM (never expand/correct). When unsure whether a term is
 a class or a specific product, emit NOTHING for it: a missed entity is
-harmless, a wrong one silently filters the entire answer."""
+harmless, a wrong one silently filters the entire answer.
+
+ALSO fill `constraints` with every structured qualifier the user STATED
+(never inferred). Worked examples:
+- 'Phase 3 GLP-1 agonist trials for obesity' ->
+  phases ['Phase 3'], drug_classes ['GLP-1 agonist'], indications ['obesity']
+- 'recruiting trials of pembrolizumab plus lenvatinib in first-line RCC' ->
+  statuses ['RECRUITING'], combination_required true, setting 'first-line',
+  indications ['RCC']
+- 'Merck trials of Keytruda' -> sponsor_names ['Merck'] (and Merck as a
+  company entity, Keytruda as a drug entity)
+- 'ongoing KRAS G12C inhibitor trials in NSCLC started since 2023' ->
+  statuses ['live'], targets ['KRAS G12C'], indications ['NSCLC'],
+  start_year_min 2023
+- 'randomized placebo-controlled trials of semaglutide' ->
+  design ['randomized', 'placebo-controlled']
+- 'trials of BMS-986278' -> all constraint fields empty.
+- 'new agents in NSCLC after progression on pembrolizumab' ->
+  exact_entities [] (pembrolizumab is the PRIOR therapy, not the studied
+  drug), indications ['NSCLC'], setting 'after progression on pembrolizumab'
+A drug named only as prior therapy / background / comparator context goes
+into `setting`, NEVER into exact_entities -- the entity filter means
+"trials that STUDY this drug".
+Do NOT set phases/statuses from the drug's typical stage -- only from the
+words in the question."""
 
 
 def build_llm(model: str, max_tokens: int = MAX_TOKENS, timeout: int = 180):
@@ -2725,9 +3008,11 @@ def make_graph(model: str, verbose: bool = True, checkpointer=None):
             return {"is_in_domain": True}
         if verbose:
             _trace_intent(verdict)
+        constraints = (verdict.constraints or QueryConstraints()).model_dump()
         return {"is_in_domain": verdict.is_in_domain,
                 "asked_entities": [e.model_dump() for e in
-                                   (verdict.exact_entities or [])]}
+                                   (verdict.exact_entities or [])],
+                "asked_constraints": constraints}
 
     # --- node: OutOfDomain (deterministic, no LLM call) --------------------
     def out_of_domain_node(state: AgentState) -> dict:
@@ -3363,62 +3648,129 @@ def make_graph(model: str, verbose: bool = True, checkpointer=None):
         trials = pools["trials"]
         asked = [e for e in (state.get("asked_entities") or [])
                  if isinstance(e, dict) and e.get("name")]
+        constraints = state.get("asked_constraints") or {}
+        question = next(
+            (m.content for m in state["messages"] if isinstance(m, HumanMessage)), "")
 
         total_matching = None
         coverage_note = None
+        enforced: list[str] = []
+        unenforceable: list[str] = []
 
         if asked:
+            drug_ents = [e for e in asked if e.get("kind", "drug") != "company"]
+            company_ents = [e for e in asked if e.get("kind") == "company"]
+            # A company entity is a SPONSOR constraint on the drug trials,
+            # never an alternative to them ('Merck trials of Keytruda').
+            if company_ents and drug_ents:
+                names = list(constraints.get("sponsor_names") or [])
+                for e in company_ents:
+                    if e["name"] not in names:
+                        names.append(e["name"])
+                constraints = {**constraints, "sponsor_names": names}
+            filter_ents = drug_ents or company_ents
+            require_all = _combination_required(
+                question, constraints, len(drug_ents)) if drug_ents else False
+
             entity_patterns: list[tuple[list, str, set]] = []
-            union_verified: set = set()
+            per_entity_verified: list[set] = []
             per_entity_bits = []
-            for ent in asked:
-                aliases = _expand_entity_aliases(ent["name"],
-                                                 ent.get("kind", "drug"))
+            for ent in filter_ents:
+                kind = ent.get("kind", "drug")
+                aliases = _expand_entity_aliases(ent["name"], kind)
                 patterns = [p for p in (_alias_pattern(a) for a in aliases) if p]
+                # Combination asks intersect the per-entity sets, so each
+                # set must be fetched whole -- a per-entity top-150 would
+                # drop intersection members that are merely older in one
+                # entity's ordering. The cap is re-applied after the
+                # intersection below.
                 exact_trials, ent_total, verified_ncts = fetch_trials_exact(
-                    aliases, ent.get("kind", "drug"), cap=POOL_MAX_TRIALS)
-                entity_patterns.append(
-                    (patterns, ent.get("kind", "drug"), verified_ncts))
-                union_verified |= verified_ncts
+                    aliases, kind,
+                    cap=(EXACT_FETCH_CEILING if require_all else POOL_MAX_TRIALS),
+                    constraints=constraints)
+                entity_patterns.append((patterns, kind, verified_ncts))
+                per_entity_verified.append(verified_ncts)
                 per_entity_bits.append(
-                    ent["name"] if len(asked) == 1
+                    ent["name"] if len(filter_ents) == 1
                     else f"{ent['name']} ({ent_total:,})")
                 have = {t.get("NCTId") for t in trials}
                 trials = trials + [t for t in exact_trials
                                    if t["NCTId"] not in have]
 
-            def _passes(t: dict) -> bool:
+            def _hits(t: dict) -> list[bool]:
                 nct = t.get("NCTId")
-                return any(nct in verified or
-                           _entity_matches_trial(pats, t, kind)
-                           for pats, kind, verified in entity_patterns)
+                return [nct in verified or _entity_matches_trial(pats, t, kind)
+                        for pats, kind, verified in entity_patterns]
 
             before = len(trials)
-            trials = [t for t in trials if _passes(t)]
-            total_matching = len(union_verified)
+            mentioned_only = 0
+            kept_trials = []
+            for t in trials:
+                hits = _hits(t)
+                ok = all(hits) if require_all else any(hits)
+                if ok:
+                    kept_trials.append(t)
+                elif any(_entity_match_tier(pats, t, kind) == "mentioned"
+                         for pats, kind, _ in entity_patterns):
+                    mentioned_only += 1
+            trials = kept_trials
+            enforced.append("combination" if require_all else "entity")
+            # Structured filters (phase/status/sponsor/...) over the pooled
+            # kNN rows too -- the backfill already honoured them.
+            trials, enf, unenf = _apply_query_constraints(trials, constraints)
+            enforced += enf
+            unenforceable += unenf
+            # TRUE total for the question AS ASKED: intersection for
+            # combinations, union otherwise, over constraint-filtered sets.
+            kept_ids = {t.get("NCTId") for t in trials}
+            if require_all:
+                verified_set = (set.intersection(*per_entity_verified)
+                                if per_entity_verified else set())
+            else:
+                verified_set = set().union(*per_entity_verified)
+            # Pool rows that pass the regex gate but were outside the
+            # engines' reach still verifiably match -- count them.
+            total_matching = len(verified_set | kept_ids)
             if verbose:
                 print(f"[prepare] entity filter "
-                      f"({', '.join(e['name'] for e in asked)}): "
-                      f"{before} pooled -> {len(trials)} verified; "
-                      f"true total {total_matching}")
+                      f"({' AND ' if require_all else ' OR '}"
+                      f"{', '.join(e['name'] for e in filter_ents)}): "
+                      f"{before} pooled -> {len(trials)} verified "
+                      f"({mentioned_only} mention-only excluded); "
+                      f"true total {total_matching}; enforced={enforced}")
+            joiner = " and " if require_all else " or "
             if total_matching > POOL_MAX_TRIALS:
                 coverage_note = (
                     f"{total_matching:,} trials in the corpus verifiably "
-                    f"involve {' or '.join(per_entity_bits)}; showing the "
+                    f"study {joiner.join(per_entity_bits)}; showing the "
                     f"{POOL_MAX_TRIALS} most advanced and most recent "
                     f"(latest phase first, active trials before completed "
                     f"ones, newest registrations first).")
             elif before > len(trials) and total_matching == 0:
                 coverage_note = (
-                    f"0 of {before} retrieved candidates verifiably contain "
-                    f"{' or '.join(e['name'] for e in asked)} -- similar-"
-                    f"looking results were excluded rather than shown.")
+                    f"0 of {before} retrieved candidates verifiably study "
+                    f"{joiner.join(e['name'] for e in filter_ents)} -- "
+                    f"similar-looking or mention-only results were excluded "
+                    f"rather than shown.")
+        else:
+            # Class/topic queries: no entity gate, but structured
+            # constraints still apply as hard filters.
+            before = len(trials)
+            trials, enf, unenf = _apply_query_constraints(trials, constraints)
+            enforced += enf
+            unenforceable += unenf
+            if verbose and enf:
+                print(f"[prepare] constraint filter {enf}: "
+                      f"{before} pooled -> {len(trials)}")
+
+        if unenforceable:
+            note = (f"Not enforced (records carry no such field): "
+                    f"{', '.join(unenforceable)}.")
+            coverage_note = f"{coverage_note} {note}" if coverage_note else note
 
         # Question-aware ORDERING rerank (moved here from _deduped_pools);
         # for entity queries the pool is already exact, so the junk gate
         # only applies when no entity filter ran (kNN neighbors present).
-        question = next(
-            (m.content for m in state["messages"] if isinstance(m, HumanMessage)), "")
         if question and len(trials) > 1:
             import reranker as _rr
             if _rr.enabled():
@@ -3435,11 +3787,21 @@ def make_graph(model: str, verbose: bool = True, checkpointer=None):
                 ranked = _rr.rerank(question, trials, _pool_text,
                                     top_k=POOL_MAX_TRIALS)
                 if asked:
-                    trials = ranked  # exact pool: ordering only, no gate
+                    # Exact pool: every row satisfies the ask equally, so
+                    # the cap must follow the analyst ordering the coverage
+                    # note promises (latest phase, live, newest) -- not the
+                    # cross-encoder's opinion. Rerank scores stay on the
+                    # dicts for diagnostics only.
+                    trials = sorted(ranked, key=_trial_analyst_key)
                 else:
                     kept = [t for t in ranked
                             if t.get("rerank_score", 0.0) >= _POOL_MIN_RERANK]
-                    if len(kept) < _POOL_MIN_KEEP:
+                    # The min-keep floor exists so a purely topical query
+                    # never returns an empty grid from an over-strict
+                    # cutoff. Once ANY deterministic constraint has been
+                    # enforced, resurrecting junk would re-break the
+                    # guarantee -- so the floor only applies unconstrained.
+                    if len(kept) < _POOL_MIN_KEEP and not enforced:
                         kept = ranked[:max(_POOL_MIN_KEEP, len(kept))]
                     trials = kept
         trials = trials[:POOL_MAX_TRIALS]
@@ -3447,7 +3809,8 @@ def make_graph(model: str, verbose: bool = True, checkpointer=None):
         pools["trials"] = trials
         return {"prepared_pools": pools,
                 "trial_total_matching": total_matching,
-                "coverage_note": coverage_note}
+                "coverage_note": coverage_note,
+                "enforced_constraints": enforced}
 
     def continue_to_extraction(state: AgentState):
         """Conditional edge from `tools` -- the Mapper.
@@ -3572,6 +3935,11 @@ def _trace_intent(verdict: IntentClassification) -> None:
     print(f"\n{'─' * 78}\n▶ NODE: IntentClassifier  (model={INTENT_MODEL})\n{'─' * 78}")
     print(f"  is_in_domain = {verdict.is_in_domain}")
     print(f"  reason       = {verdict.reason}")
+    ents = [f"{e.name}/{e.kind}" for e in (verdict.exact_entities or [])]
+    print(f"  entities     = {ents}")
+    c = (verdict.constraints or QueryConstraints()).model_dump()
+    stated = {k: v for k, v in c.items() if v not in (None, False, [], "")}
+    print(f"  constraints  = {stated}")
 
 
 def _trace_agent(reply, round_no: int) -> None:
@@ -5020,7 +5388,8 @@ def main() -> int:
          "retrieved_fda": [], "retrieved_pubmed": [], "retrieved_sec": [],
          "retrieved_news": [], "retrieved_crls": [], "retrieved_safety": [],
          "retrieved_exclusivity": [], "retrieved_stats": [],
-         "asked_entities": [], "prepared_pools": None,
+         "asked_entities": [], "asked_constraints": {},
+         "enforced_constraints": [], "prepared_pools": None,
          "trial_total_matching": None, "coverage_note": None},
         config={"recursion_limit": 25},
     )
