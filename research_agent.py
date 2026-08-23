@@ -292,7 +292,8 @@ def _evidence_in_source(evidence: str, source_text: str) -> bool:
 
 
 def _finalize_mechanism(row: "TrialRow", studied: list[str],
-                        drug_facts: dict, source_text: str) -> None:
+                        drug_facts: dict, record_text: str,
+                        pools_text: str = "") -> None:
     """Deterministic mechanism column, applied AFTER the LLM row:
 
     1. Every studied agent the drug KB knows gets its curated phrase
@@ -326,7 +327,16 @@ def _finalize_mechanism(row: "TrialRow", studied: list[str],
     if llm_source not in _MECH_SOURCE_RANK or llm_source == "kb":
         llm_source = "model_knowledge" if llm_phrase else "unknown"
     if llm_source in ("trial_text", "literature"):
-        if not _evidence_in_source(llm_evidence, source_text):
+        # The quote must sit in the SOURCE the label claims -- a pool
+        # excerpt quote labelled 'trial_text' (or vice versa) is relabelled
+        # to where it was actually found; found nowhere, it downgrades.
+        in_record = _evidence_in_source(llm_evidence, record_text)
+        in_pools = _evidence_in_source(llm_evidence, pools_text)
+        if in_record:
+            llm_source = "trial_text"
+        elif in_pools:
+            llm_source = "literature"
+        else:
             llm_source = "model_knowledge" if llm_phrase else "unknown"
             llm_evidence = ""
     uncovered = [n for n in studied if n not in kb_agents]
@@ -3830,6 +3840,7 @@ def make_graph(model: str, verbose: bool = True, checkpointer=None):
             prompt += "FDA COMPLETE RESPONSE LETTER EXCERPTS: (none retrieved this run)\n\n"
 
         # Per-trial content from here on (prompt-cache prefix ends above).
+        pools_text = _norm_ws(prompt)  # shared excerpts only, for span checks
         drug_facts = state.get("drug_facts") or {}
         kb_lines = [f"- {name}: {f['mechanism']}  [{f.get('source')}]"
                     for name, f in drug_facts.items() if f.get("mechanism")]
@@ -3842,7 +3853,7 @@ def make_graph(model: str, verbose: bool = True, checkpointer=None):
             f"TRIAL RECORD (structured registry -- the primary source for "
             f"this row):\n{json.dumps(trial, indent=2)}"
         )
-        source_text = _norm_ws(prompt)  # for verbatim evidence checks
+        record_text = _norm_ws(json.dumps(trial))  # for verbatim evidence checks
 
         # _extraction_semaphore + a generous retry budget, not a single quick
         # retry -- at up to TRIAL_SEARCH_LIMIT=50 concurrent workers, the
@@ -3988,7 +3999,7 @@ def make_graph(model: str, verbose: bool = True, checkpointer=None):
                              if not re.match(r"^placebos?( for .+| capsule| tablet)?$",
                                              iv.strip(), re.I)]
 
-        _finalize_mechanism(row, studied, drug_facts, source_text)
+        _finalize_mechanism(row, studied, drug_facts, record_text, pools_text)
         row.constraints = [ConstraintVerdict(**v) for v in
                            (state.get("constraint_report") or [])]
 

@@ -50,6 +50,19 @@ class TestFinalize:
         _finalize_mechanism(r, ["XYZ-101"], {}, SOURCE)
         assert r.mechanism_source == "trial_text" and r.mechanism_described
 
+    def test_pool_quote_relabelled_to_literature(self):
+        pools = _norm_ws('LITERATURE: "XYZ-101, a first-in-class TLR7 agonist, showed..."')
+        r = _row(mechanism="TLR7 agonist", mechanism_source="trial_text",
+                 mechanism_evidence="a first-in-class TLR7 agonist")
+        _finalize_mechanism(r, ["XYZ-101"], {}, SOURCE, pools)
+        assert r.mechanism_source == "literature" and r.mechanism_described
+
+    def test_record_quote_relabelled_to_trial_text(self):
+        r = _row(mechanism="anti-PD-1 antibody", mechanism_source="literature",
+                 mechanism_evidence="humanized anti-PD-1 monoclonal antibody")
+        _finalize_mechanism(r, ["XYZ-101"], {}, SOURCE, "")
+        assert r.mechanism_source == "trial_text"
+
     def test_paraphrased_span_downgrades(self):
         r = _row(mechanism="anti-PD-1 antibody", mechanism_source="trial_text",
                  mechanism_evidence="an antibody against PD-1 (humanised)")
