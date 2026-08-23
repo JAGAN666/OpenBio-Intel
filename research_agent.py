@@ -2566,6 +2566,10 @@ CLASS_FETCH_CAP = int(os.getenv("CLASS_FETCH_CAP", "400"))
 VERIFIER_BATCH = 8
 CORRECTIVE_MIN_ROWS = 5
 MINI_ATTEMPTS = 6
+# Reducer prompt budget for the rows array (~chars; ≈ tokens * 4). Keeps
+# the single Reduce request under gpt-4o's 30K-TPM ceiling with headroom
+# for the system prompt and the question.
+REDUCER_CHAR_BUDGET = int(os.getenv("REDUCER_CHAR_BUDGET", "80000"))
 # Verifier policy per constraint kind when the record does not state it:
 # an indication or class the record never mentions means the trial is not
 # about it (exclude); a setting/design qualifier it omits is merely
@@ -4126,11 +4130,33 @@ def make_graph(model: str, verbose: bool = True, checkpointer=None):
                     f"{len(rows)} below are the most advanced and most recent "
                     f"of them. Do not imply the table is exhaustive.\n\n"
                 )
+            # The narrative needs the analytical fields only -- the
+            # audit-trail fields (constraints, sources, mechanism_evidence)
+            # roughly tripled each row, and at a 150-row fanout the full
+            # dump exceeded gpt-4o's 30K-TPM ceiling IN ONE REQUEST
+            # ("Request too large", not a transient 429 -- no retry can
+            # fix that). Slim rows first; if still over budget, write the
+            # prose from the leading rows and say so.
+            slim = [{k: v for k, v in r.model_dump().items()
+                     if k in ("nct_id", "sponsor", "phase", "interventions",
+                              "indication", "status", "mechanism",
+                              "mechanism_or_findings")} for r in rows]
+            rows_json = json.dumps(slim, indent=2)
+            if len(rows_json) > REDUCER_CHAR_BUDGET:
+                n_fit = max(20, int(len(slim) * REDUCER_CHAR_BUDGET / len(rows_json)))
+                rows_json = json.dumps(slim[:n_fit], indent=2)
+                prompt += (
+                    f"NOTE: the table has {len(rows)} rows; for length, the "
+                    f"array below carries the {n_fit} most advanced/most "
+                    f"recent. Write the narrative about the FULL set of "
+                    f"{len(rows)} (and any COVERAGE FACT above), citing "
+                    f"examples only from the rows you can see.\n\n"
+                )
             prompt += (
                 f"EXTRACTED TRIAL ROWS (the only permitted source -- already "
                 f"validated, structured records produced by independent Map-stage "
                 f"workers; you do not have access to raw retrieval text):\n"
-                + json.dumps([r.model_dump() for r in rows], indent=2)
+                + rows_json
             )
             system_prompt = REDUCER_SYSTEM
 
@@ -4144,10 +4170,16 @@ def make_graph(model: str, verbose: bool = True, checkpointer=None):
                 f"Correct the structure this time — match the schema exactly."
             )
 
+        # attempts=8: the Reduce call starts the moment the last Map worker
+        # returns, i.e. exactly when the 30K-TPM gpt-4o window is fullest
+        # from extraction stragglers -- verified live that 4 attempts (~48s)
+        # was not always enough to clear it at a 150-row fanout, and a
+        # rate-limited reducer kills the WHOLE multi-minute run at its very
+        # last step.
         outcome: dict = _invoke_ratelimit_retry(narrative_llm, [
             SystemMessage(content=system_prompt),
             HumanMessage(content=prompt),
-        ], label="narrative", verbose=verbose)
+        ], attempts=8, label="narrative", verbose=verbose)
         parsed: NarrativeSummary | None = outcome.get("parsed")
         error = outcome.get("parsing_error")
 
