@@ -34,13 +34,49 @@ export type Indication = string;
  */
 export type Status = string;
 /**
+ * Canonical mechanism/target class of the studied agent(s), e.g. 'PD-1 inhibitor', 'LPA1 receptor antagonist', 'GLP-1 receptor agonist'; for combinations 'pembrolizumab: PD-1 inhibitor; lenvatinib: multikinase VEGFR inhibitor'. Empty string when unknown. If KNOWN MECHANISMS are supplied for this trial, copy them -- they are overwritten deterministically anyway.
+ */
+export type Mechanism = string;
+/**
+ * Where `mechanism` came from, exactly one of: 'trial_text' (stated in this trial record -- quote it in mechanism_evidence), 'literature' (stated in a fused excerpt -- quote it), 'model_knowledge' (the agent is a named, real drug whose pharmacology is textbook-stable and no source here states it), 'unknown' (development code or agent with no public pharmacology; mechanism must be empty). Never 'model_knowledge' for a code-named compound.
+ */
+export type MechanismSource = string;
+/**
+ * For 'trial_text'/'literature': the VERBATIM sentence fragment (<= 200 chars) from the source that states the mechanism, copied exactly -- it is checked against the source and a non-matching quote downgrades the row. Empty for 'model_knowledge'/'unknown'.
+ */
+export type MechanismEvidence = string;
+/**
  * ONE analyst-grade line in EXACTLY this shape: '<Setting/population>: <regimen> vs <comparator> — <the notable point>.' Example: 'First-line R/M HNSCC: cetuximab + pembrolizumab + chemo vs pembrolizumab + chemo — randomized Phase 3.' Another: 'PD-L1+ NSCLC post-progression: trastuzumab deruxtecan (HER2 ADC) + pembrolizumab vs platinum doublet — first ADC-IO pairing in this setting per the record.' FORBIDDEN openings (auto-fail): 'This trial', 'This study', 'This is a', anything containing 'evaluate the safety and efficacy'. Name the mechanism when the text states it. Use ONLY the retrieved text; an unsupported claim is worse than a gap.
  */
 export type MechanismOrFindings = string;
 /**
- * True ONLY if the retrieved text explicitly names the mechanism of action or biological target of the primary intervention. False if the mechanism/target is not stated, even if other trial design details (like biomarkers) are present.
+ * True ONLY if the retrieved text explicitly names the mechanism of action or biological target of the primary intervention. False if the mechanism/target is not stated, even if other trial design details (like biomarkers) are present. OVERWRITTEN deterministically from mechanism_source after extraction.
  */
 export type MechanismDescribed = boolean;
+/**
+ * e.g. 'phase: Phase 3', 'drug studied: pembrolizumab'
+ */
+export type Constraint = string;
+/**
+ * satisfied | not_stated | violated
+ */
+export type Verdict = string;
+/**
+ * deterministic | verifier
+ */
+export type How = string;
+/**
+ * verbatim span or field value
+ */
+export type Evidence = string;
+/**
+ * record field the evidence came from
+ */
+export type Field = string;
+/**
+ * Set deterministically by the pipeline (never by you): per-constraint verification verdicts for this row.
+ */
+export type Constraints = ConstraintVerdict[];
 /**
  * One of: registry, pdf_literature, fda, pubmed, sec, news.
  */
@@ -94,9 +130,26 @@ export interface TrialRow {
   interventions: Interventions;
   indication?: Indication;
   status?: Status;
+  mechanism?: Mechanism;
+  mechanism_source?: MechanismSource;
+  mechanism_evidence?: MechanismEvidence;
   mechanism_or_findings: MechanismOrFindings;
   mechanism_described: MechanismDescribed;
+  constraints?: Constraints;
   sources?: Sources;
+}
+/**
+ * Why this row is in the table: one asked constraint, whether the
+ * record satisfies it, and the evidence. 'deterministic' verdicts come
+ * from structured fields (phase/status/sponsor/studied intervention);
+ * 'verified'/'not_stated' come from the per-candidate verifier.
+ */
+export interface ConstraintVerdict {
+  constraint: Constraint;
+  verdict: Verdict;
+  how?: How;
+  evidence?: Evidence;
+  field?: Field;
 }
 /**
  * One clickable provenance link behind a Smart Table row -- the

@@ -263,6 +263,137 @@ def _trial_haystack(trial: dict) -> str:
     ])
 
 
+# --- mechanism provenance ---------------------------------------------------
+# Strength order of a mechanism cell's provenance; a combination row takes
+# the WEAKEST tier among its agents so the badge never over-claims.
+_MECH_SOURCE_RANK = {"kb": 0, "trial_text": 1, "literature": 2,
+                     "model_knowledge": 3, "unknown": 4}
+_MECH_VERIFIED = {"kb", "trial_text", "literature"}
+
+
+def _norm_ws(s: str) -> str:
+    return re.sub(r"\s+", " ", (s or "")).strip().casefold()
+
+
+def _evidence_in_source(evidence: str, source_text: str) -> bool:
+    """Verbatim (whitespace/case-insensitive) containment check for an
+    LLM-quoted span. JSON escaping in the prompt can turn '"' into '\\"',
+    so the check also tries the json-escaped form of the quote."""
+    ev = _norm_ws(evidence)
+    if len(ev) < 8:
+        return False
+    if ev in source_text:
+        return True
+    escaped = _norm_ws(json.dumps(evidence)[1:-1])
+    return bool(escaped) and escaped in source_text
+
+
+def _finalize_mechanism(row: "TrialRow", studied: list[str],
+                        drug_facts: dict, source_text: str) -> None:
+    """Deterministic mechanism column, applied AFTER the LLM row:
+
+    1. Every studied agent the drug KB knows gets its curated phrase
+       (source 'kb', evidence = reference URL) -- never the model's words.
+    2. The model's own claim covers the rest, but a 'trial_text' /
+       'literature' claim must quote a span that occurs verbatim in the
+       worker's sources, else it is downgraded to 'model_knowledge' (if a
+       phrase was given) or 'unknown'.
+    3. 'model_knowledge' is refused for code-named agents (dev codes are
+       exactly where recall hallucinates).
+    4. mechanism_described mirrors whether the provenance is verified.
+    """
+    parts: list[tuple[str, str, str, str]] = []  # (agent, phrase, source, evidence)
+    kb_agents = []
+    seen_substances: set[str] = set()
+    for name in studied:
+        f = drug_facts.get(name) or {}
+        if f.get("mechanism"):
+            kb_agents.append(name)
+            # Two dose arms of one drug resolve to one substance: one part.
+            sub = (f.get("pref_name") or name).casefold()
+            if sub in seen_substances:
+                continue
+            seen_substances.add(sub)
+            parts.append((f.get("pref_name") or name, f["mechanism"], "kb",
+                          f.get("ref_url") or ""))
+
+    llm_phrase = (row.mechanism or "").strip()
+    llm_source = (row.mechanism_source or "unknown").strip().lower()
+    llm_evidence = (row.mechanism_evidence or "").strip()
+    if llm_source not in _MECH_SOURCE_RANK or llm_source == "kb":
+        llm_source = "model_knowledge" if llm_phrase else "unknown"
+    if llm_source in ("trial_text", "literature"):
+        if not _evidence_in_source(llm_evidence, source_text):
+            llm_source = "model_knowledge" if llm_phrase else "unknown"
+            llm_evidence = ""
+    uncovered = [n for n in studied if n not in kb_agents]
+    if llm_source == "model_knowledge" and uncovered and all(
+            re.search(r"\d", n) for n in uncovered):
+        llm_source, llm_phrase, llm_evidence = "unknown", "", ""
+    if not llm_phrase:
+        llm_source, llm_evidence = "unknown", ""
+
+    if llm_phrase and (uncovered or not parts):
+        # The model's phrase may already be per-agent ("a: X; b: Y"); keep
+        # it as one part attributed to the uncovered agents.
+        parts.append((", ".join(uncovered) if len(uncovered) != 1 else uncovered[0],
+                      llm_phrase, llm_source, llm_evidence))
+
+    if not parts:
+        row.mechanism, row.mechanism_source, row.mechanism_evidence = "", "unknown", ""
+        row.mechanism_described = False
+        return
+
+    if len(parts) == 1:
+        row.mechanism = parts[0][1]
+    else:
+        row.mechanism = "; ".join(f"{agent}: {phrase}" for agent, phrase, _, _ in parts)
+    covered_agents = len(kb_agents) + (1 if llm_phrase and uncovered else 0)
+    weakest = max(parts, key=lambda p: _MECH_SOURCE_RANK[p[2]])[2]
+    if uncovered and not llm_phrase and parts:
+        # KB knows some agents, nothing knows the rest: provenance is
+        # still honest for what is shown, but flag partial coverage.
+        row.mechanism += f" (no mechanism on record for {', '.join(uncovered)})"
+    row.mechanism_source = weakest
+    row.mechanism_evidence = " | ".join(
+        f"{agent}: {ev}" if len(parts) > 1 else ev
+        for agent, _, _, ev in parts if ev)
+    row.mechanism_described = weakest in _MECH_VERIFIED
+    _ = covered_agents
+
+
+def _propagate_mechanisms(rows: list["TrialRow"]) -> int:
+    """Cross-row consistency: an agent whose mechanism one row verified
+    from trial text / literature (or the KB) is the same agent in every
+    other row. Rows still 'unknown' or 'model_knowledge' for a single
+    studied agent inherit the verified phrase, with the originating NCT in
+    the evidence. Returns the number of rows upgraded."""
+    from drug_kb import name_variants
+    verified: dict[str, tuple[str, str, str, str]] = {}
+    for r in rows:
+        if r.mechanism_source in _MECH_VERIFIED and len(r.interventions or []) == 1 \
+                and r.mechanism and ":" not in r.mechanism:
+            for key in name_variants(r.interventions[0])[:3]:
+                verified.setdefault(key, (r.mechanism, r.mechanism_source,
+                                          r.mechanism_evidence, r.nct_id))
+    if not verified:
+        return 0
+    upgraded = 0
+    for r in rows:
+        if r.mechanism_source in _MECH_VERIFIED or len(r.interventions or []) != 1:
+            continue
+        for key in name_variants(r.interventions[0])[:3]:
+            hit = verified.get(key)
+            if hit:
+                phrase, source, ev, nct = hit
+                r.mechanism, r.mechanism_source = phrase, source
+                r.mechanism_evidence = f"[{nct}] {ev}".strip()
+                r.mechanism_described = True
+                upgraded += 1
+                break
+    return upgraded
+
+
 def get_drug_mechanisms(names: list[str]) -> dict[str, dict]:
     """Deterministic mechanism facts for intervention names, from the
     drug KB build_drug_kb.py writes (Open Targets/ChEMBL + GtoPdb).
@@ -356,11 +487,10 @@ def _expand_entity_aliases(name: str, kind: str = "drug") -> list[str]:
     return sorted(aliases)[:12]
 
 
-_PLACEBO_NAME_RE = re.compile(
-    r"^(?:placebos?|matching placebo|placebo matching|sham|vehicle|dummy)"
-    r"(?:[\s,:-]+.*)?$", re.IGNORECASE)
-_STUDIED_INTERVENTION_TYPES = {"DRUG", "BIOLOGICAL", "COMBINATION_PRODUCT",
-                               "GENETIC", "UNKNOWN", ""}
+import ct_schema as _ct_schema
+
+_PLACEBO_NAME_RE = _ct_schema.PLACEBO_NAME_RE
+_STUDIED_INTERVENTION_TYPES = _ct_schema.STUDIED_TYPES
 
 
 def _studied_intervention_names(trial: dict) -> list[str]:
@@ -610,6 +740,37 @@ class TrialRow(BaseModel):
                     "deterministically from the trial record after "
                     "extraction; whatever you write here is replaced."
     )
+    mechanism: str = Field(
+        default="",
+        description="Canonical mechanism/target class of the studied "
+                    "agent(s), e.g. 'PD-1 inhibitor', 'LPA1 receptor "
+                    "antagonist', 'GLP-1 receptor agonist'; for "
+                    "combinations 'pembrolizumab: PD-1 inhibitor; "
+                    "lenvatinib: multikinase VEGFR inhibitor'. Empty "
+                    "string when unknown. If KNOWN MECHANISMS are supplied "
+                    "for this trial, copy them -- they are overwritten "
+                    "deterministically anyway."
+    )
+    mechanism_source: str = Field(
+        default="unknown",
+        description="Where `mechanism` came from, exactly one of: "
+                    "'trial_text' (stated in this trial record -- quote it "
+                    "in mechanism_evidence), 'literature' (stated in a "
+                    "fused excerpt -- quote it), 'model_knowledge' (the "
+                    "agent is a named, real drug whose pharmacology is "
+                    "textbook-stable and no source here states it), "
+                    "'unknown' (development code or agent with no public "
+                    "pharmacology; mechanism must be empty). Never "
+                    "'model_knowledge' for a code-named compound."
+    )
+    mechanism_evidence: str = Field(
+        default="",
+        description="For 'trial_text'/'literature': the VERBATIM sentence "
+                    "fragment (<= 200 chars) from the source that states "
+                    "the mechanism, copied exactly -- it is checked against "
+                    "the source and a non-matching quote downgrades the "
+                    "row. Empty for 'model_knowledge'/'unknown'."
+    )
     mechanism_or_findings: str = Field(
         description="ONE analyst-grade line in EXACTLY this shape: "
                     "'<Setting/population>: <regimen> vs <comparator> — "
@@ -635,7 +796,13 @@ class TrialRow(BaseModel):
                     "mechanism of action or biological target of the primary "
                     "intervention. False if the mechanism/target is not "
                     "stated, even if other trial design details (like "
-                    "biomarkers) are present."
+                    "biomarkers) are present. OVERWRITTEN deterministically "
+                    "from mechanism_source after extraction."
+    )
+    constraints: list["ConstraintVerdict"] = Field(
+        default_factory=list,
+        description="Set deterministically by the pipeline (never by you): "
+                    "per-constraint verification verdicts for this row."
     )
     sources: list["SourceCitation"] = Field(
         default_factory=list,
@@ -647,6 +814,20 @@ class TrialRow(BaseModel):
                     "Never invent references -- an uncited claim is better "
                     "than a fabricated citation."
     )
+
+
+class ConstraintVerdict(BaseModel):
+    """Why this row is in the table: one asked constraint, whether the
+    record satisfies it, and the evidence. 'deterministic' verdicts come
+    from structured fields (phase/status/sponsor/studied intervention);
+    'verified'/'not_stated' come from the per-candidate verifier."""
+
+    constraint: str = Field(description="e.g. 'phase: Phase 3', 'drug studied: pembrolizumab'")
+    verdict: str = Field(description="satisfied | not_stated | violated")
+    how: str = Field(default="deterministic",
+                     description="deterministic | verifier")
+    evidence: str = Field(default="", description="verbatim span or field value")
+    field: str = Field(default="", description="record field the evidence came from")
 
 
 class SourceCitation(BaseModel):
@@ -2556,16 +2737,29 @@ STRICT CORPUS GROUNDING -- the hard boundary, now covering ALL SIX sources:
   excerpts, the SEC filing excerpts, and the corporate news excerpts below
   are your ONLY sources. Your own pharmacological or regulatory knowledge
   is out of scope, even when you are confident it is correct.
-- Do not state a drug's molecular target, modality, or mechanism unless one
-  of these sources says so. If the trial record names an agent without
-  describing how it works, the mechanism is unknown FOR OUR PURPOSES: set
-  mechanism_described to false, and use mechanism_or_findings to report
-  whatever the sources DO give you (population, biomarker, comparator,
-  endpoint, study design, matching literature finding, or matching FDA
-  approval status). Do not discard that detail -- a false flag with useful
-  context is the goal, not a blank row.
 - nct_id MUST be copied exactly from this record's own NCTId field -- never
   invented, never guessed from context.
+
+MECHANISM -- the ONE place your own knowledge is allowed, in a labelled tier:
+- If KNOWN MECHANISMS are supplied for this trial (curated database facts),
+  copy them into `mechanism`; they will be set deterministically anyway.
+- Else if the trial record (intervention `description`, DetailedDescription,
+  title, summary) or a genuinely matching excerpt STATES the mechanism or
+  target ("XYZ-101 is a humanized anti-PD-1 monoclonal antibody"), set
+  mechanism from it, mechanism_source 'trial_text' or 'literature', and copy
+  the exact stating fragment into mechanism_evidence. The quote is verified
+  verbatim against the source: paraphrases fail.
+- Else if the studied agent is a NAMED, real drug whose pharmacology is
+  textbook-stable (cetuximab -> EGFR antibody; metformin -> AMPK/complex I;
+  semaglutide -> GLP-1 receptor agonist), you MAY state its class with
+  mechanism_source 'model_knowledge' -- class/target phrase only, no
+  invented details, no efficacy claims. The table labels it as unverified.
+- Else (development code, novel biologic, cell therapy you cannot place
+  with certainty): mechanism '' and mechanism_source 'unknown'. A blank is
+  correct; a guess is a defect.
+- mechanism_or_findings stays source-only as before: report what the
+  sources DO give you (population, regimen, comparator, endpoint, design,
+  matching literature finding, FDA status). Do not discard that detail.
 
 FUSING LITERATURE INTO mechanism_or_findings:
 - A literature excerpt is about YOUR trial ONLY if it explicitly names this
@@ -2653,10 +2847,13 @@ FUSING CORPORATE NEWS EXCERPTS INTO mechanism_or_findings:
   force a connection.
 
 Each trial record carries structured pharmacology: `interventions` (a list of
-{type, name}), `conditions`, and `studyType`. Use those fields as the
-authoritative source for which agents are being tested -- name the specific
-interventions rather than describing them generically, and do not rely on
-parsing drug names out of the narrative BriefSummary.
+{type, name, description, otherNames, armGroupLabels}), `armGroups`,
+`interventionRoles` (studied / comparator / placebo), `conditions`, and
+`studyType`. Use those fields as the authoritative source for which agents
+are being tested -- name the specific STUDIED interventions rather than
+describing them generically, and do not rely on parsing drug names out of
+the narrative BriefSummary. Comparator/placebo arms belong in the
+'vs <comparator>' slot of mechanism_or_findings, not in `interventions`.
 
 CITATIONS (the `sources` field): for every auxiliary excerpt you actually
 fused into mechanism_or_findings, add one sources entry copying that
@@ -3275,10 +3472,20 @@ def make_graph(model: str, verbose: bool = True, checkpointer=None):
         else:
             prompt += "FDA COMPLETE RESPONSE LETTER EXCERPTS: (none retrieved this run)\n\n"
 
+        # Per-trial content from here on (prompt-cache prefix ends above).
+        drug_facts = state.get("drug_facts") or {}
+        kb_lines = [f"- {name}: {f['mechanism']}  [{f.get('source')}]"
+                    for name, f in drug_facts.items() if f.get("mechanism")]
+        if kb_lines:
+            prompt += ("KNOWN MECHANISMS (curated drug database, Open Targets/"
+                       "ChEMBL + IUPHAR -- authoritative for this trial's "
+                       "studied agents; copy into `mechanism`):\n"
+                       + "\n".join(kb_lines) + "\n\n")
         prompt += (
             f"TRIAL RECORD (structured registry -- the primary source for "
             f"this row):\n{json.dumps(trial, indent=2)}"
         )
+        source_text = _norm_ws(prompt)  # for verbatim evidence checks
 
         # _extraction_semaphore + a generous retry budget, not a single quick
         # retry -- at up to TRIAL_SEARCH_LIMIT=50 concurrent workers, the
@@ -3295,16 +3502,33 @@ def make_graph(model: str, verbose: bool = True, checkpointer=None):
         messages = [SystemMessage(content=EXTRACTION_SYSTEM),
                     HumanMessage(content=prompt)]
 
+        studied = _studied_intervention_names(trial)
+        kb_covered = {n for n in studied if drug_facts.get(n, {}).get("mechanism")}
+        record_has_mechanism_text = bool(
+            trial.get("DetailedDescription")
+            or any((iv.get("description") or "").strip()
+                   for iv in (trial.get("interventions") or [])
+                   if isinstance(iv, dict)))
+
         def _cascade_acceptable(candidate: TrialRow | None) -> bool:
             """Deterministic accept gate for the mini tier: the schema
             parsed AND the critical identity fields are present and honest
             (nct_id must match the record this worker was given -- a
             mismatched id is the classic small-model copy error and would
-            poison the table)."""
-            return (candidate is not None
-                    and (candidate.nct_id or "").strip() == nct_id
-                    and bool((candidate.phase or "").strip())
-                    and bool((candidate.sponsor or "").strip()))
+            poison the table). Also escalates when mini found NO mechanism
+            although the record carries mechanism-bearing text and the KB
+            has nothing for it -- evidence existed and the small model
+            missed it; when there is genuinely nothing to read, an empty
+            mechanism is the right answer and costs no escalation."""
+            if (candidate is None
+                    or (candidate.nct_id or "").strip() != nct_id
+                    or not (candidate.phase or "").strip()
+                    or not (candidate.sponsor or "").strip()):
+                return False
+            if (studied and not kb_covered and record_has_mechanism_text
+                    and not (candidate.mechanism or "").strip()):
+                return False
+            return True
 
         # --- tier 1: mini model, outside the gpt-4o semaphore -----------
         # The semaphore exists purely to ration the 30K-TPM gpt-4o budget;
@@ -3402,9 +3626,11 @@ def make_graph(model: str, verbose: bool = True, checkpointer=None):
                              if not re.match(r"^placebos?( for .+| capsule| tablet)?$",
                                              iv.strip(), re.I)]
 
+        _finalize_mechanism(row, studied, drug_facts, source_text)
+
         if verbose:
             print(f"  ✓ {row.nct_id}  phase={row.phase!r}  "
-                  f"mechanism_described={row.mechanism_described}  "
+                  f"mechanism={row.mechanism[:60]!r} [{row.mechanism_source}]  "
                   f"tier={tier}  sources={len(row.sources)}  "
                   f"({time.time() - started:.1f}s)")
         return {"extracted_rows": [row]}
@@ -3435,6 +3661,9 @@ def make_graph(model: str, verbose: bool = True, checkpointer=None):
             (m.content for m in state["messages"] if isinstance(m, HumanMessage)), ""
         )
         rows = _order_rows(state.get("extracted_rows", []))
+        upgraded = _propagate_mechanisms(rows)
+        if verbose and upgraded:
+            print(f"[mechanism] cross-row propagation upgraded {upgraded} row(s)")
         retries = state.get("synthesis_retries", 0)
 
         # Completeness honesty -- carried from prepare_extraction, attached

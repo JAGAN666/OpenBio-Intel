@@ -71,6 +71,12 @@ def name_variants(raw: str) -> list[str]:
     # parenthesised aliases: "Pembrolizumab (MK-3475)" -> the code too
     for inner in re.findall(r"\(([^()]{2,60})\)", raw):
         _add(inner)
+    # leading development code: "BMS-986278 Batched method, Dose A" ->
+    # "bms 986278"; "AZD1234 10 mg" -> "azd1234"
+    m = re.match(r"([a-z]{1,6})[ -]?(\d{3,7}[a-z]?)\b", norm_name(head))
+    if m:
+        _add(f"{m.group(1)} {m.group(2)}")
+        _add(m.group(1) + m.group(2))
     # first token alone when it looks like a dev code or a single INN
     if tokens and (re.search(r"\d", tokens[0]) or len(tokens) == 1):
         _add(tokens[0])

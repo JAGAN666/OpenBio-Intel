@@ -71,7 +71,9 @@ STUDIED_TYPES = {"DRUG", "BIOLOGICAL", "COMBINATION_PRODUCT", "GENETIC",
 
 PLACEBO_NAME_RE = re.compile(
     r"^(?:placebos?|matching placebo|placebo matching|sham|vehicle|dummy|"
-    r"saline|normal saline)(?:[\s,:()-]+.*)?$", re.IGNORECASE)
+    r"saline|normal saline)(?:[\s,:()-]+.*)?$"
+    r"|^.*(?:\s|-)(?:placebos?|sham)(?:\s*(?:arm|group|comparator|tablets?|"
+    r"capsules?|injection|infusion|matching|matched))*\s*$", re.IGNORECASE)
 PLACEBO_ARM_TYPES = {"PLACEBO_COMPARATOR", "SHAM_COMPARATOR", "NO_INTERVENTION"}
 COMPARATOR_ARM_TYPES = {"ACTIVE_COMPARATOR"}
 
