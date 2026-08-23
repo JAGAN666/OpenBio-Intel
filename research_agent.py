@@ -112,7 +112,9 @@ load_dotenv(Path(__file__).resolve().parent / ".env", override=False)
 # sets QDRANT_HOST=qdrant so the container reaches Qdrant by service name.
 QDRANT_HOST = os.getenv("QDRANT_HOST", "localhost")
 QDRANT_PORT = int(os.getenv("QDRANT_PORT", "6333"))
-COLLECTION_NAME = "clinical_trials"
+# Overridable so a rebuilt collection (migrate_trials_v3.py) can be probed
+# before its alias is swapped; production leaves this at the alias name.
+COLLECTION_NAME = os.getenv("TRIALS_COLLECTION", "clinical_trials")
 # Federated second source (see ingest_pipeline.py): unstructured PDF
 # literature -- conference posters, FDA filings -- parsed via vision-based
 # extraction. Kept in its own collection rather than mixed into
@@ -394,6 +396,283 @@ def _propagate_mechanisms(rows: list["TrialRow"]) -> int:
     return upgraded
 
 
+class ClassExpansion(BaseModel):
+    """A drug class / target phrase resolved to the vocabulary the drug KB
+    indexes on: HGNC target symbols, ChEMBL action types, and MoA keywords.
+    E.g. 'GLP-1 receptor agonist' -> symbols ['GLP1R'], actions ['AGONIST'];
+    'checkpoint inhibitors' -> symbols ['PDCD1','CD274','CTLA4','LAG3'],
+    actions ['INHIBITOR','ANTAGONIST']; 'KRAS G12C' -> symbols ['KRAS']."""
+
+    term: str = Field(description="The class/target phrase as asked, verbatim.")
+    target_symbols: list[str] = Field(
+        default_factory=list,
+        description="HGNC gene symbols of the molecular target(s), uppercase, "
+                    "e.g. ['GLP1R'], ['KRAS'], ['PDCD1', 'CD274']. Empty if "
+                    "the class is not target-defined (e.g. 'ADC', 'taxane').")
+    action_types: list[str] = Field(
+        default_factory=list,
+        description="ChEMBL action types implied, uppercase: AGONIST, "
+                    "ANTAGONIST, INHIBITOR, MODULATOR, ACTIVATOR, BINDING "
+                    "AGENT, BLOCKER, DEGRADER. Empty if unspecified.")
+    moa_keywords: list[str] = Field(
+        default_factory=list,
+        description="Lowercase substrings that would appear in a curated "
+                    "mechanism phrase for members of this class, e.g. "
+                    "['glucagon-like peptide 1 receptor agonist'], "
+                    "['antibody-drug conjugate'], ['taxane', 'tubulin'].")
+
+
+class ClassExpansions(BaseModel):
+    expansions: list[ClassExpansion] = Field(default_factory=list)
+
+
+CLASS_EXPANSION_SYSTEM = """You map drug-class and molecular-target phrases
+from an analyst's question to controlled vocabulary used by a curated drug
+mechanism database (ChEMBL/Open Targets + IUPHAR). For each phrase give the
+HGNC target symbols, the implied ChEMBL action types, and lowercase keywords
+that would appear in a curated mechanism phrase such as 'Glucagon-like
+peptide 1 receptor agonist' or 'Programmed cell death protein 1 inhibitor'.
+Be exhaustive on symbols for umbrella classes (checkpoint inhibitors ->
+PDCD1, CD274, CTLA4, LAG3, TIGIT, HAVCR2). Never invent symbols."""
+
+CLASS_MEMBERS_QUERY = """
+MATCH (s:Substance)-[:HAS_MECHANISM]->(m:Mechanism)
+WHERE (size($symbols) > 0 AND ANY(x IN coalesce(m.target_symbols, []) WHERE x IN $symbols)
+       AND (size($actions) = 0 OR m.action_type IN $actions))
+   OR ANY(k IN $keywords WHERE k <> '' AND toLower(coalesce(m.moa, '')) CONTAINS k)
+WITH DISTINCT s
+MATCH (n:DrugName)-[r:RESOLVES_TO]->(s)
+WHERE r.priority <= 1 AND size(n.norm) >= 4
+RETURN s.key AS key, s.pref_name AS pref_name, collect(DISTINCT n.norm) AS names
+LIMIT 2000
+"""
+
+
+def fetch_trials_by_class(expansions: list[dict], constraints: dict | None,
+                          cap: int) -> tuple[list[dict], dict[str, str], int]:
+    """COMPLETE, KB-verified retrieval for a drug class / target: every
+    trial whose STUDIED agent resolves to a substance with a matching
+    curated mechanism. Returns (trials in analyst order capped at `cap`,
+    {nct: member pref_name}, true total). Degrades to ([], {}, 0) when the
+    KB or the v3 text index is unavailable -- kNN still runs."""
+    symbols = sorted({s.upper() for e in expansions for s in e.get("target_symbols") or []})
+    actions = sorted({a.upper() for e in expansions for a in e.get("action_types") or []})
+    keywords = sorted({k.lower().strip() for e in expansions
+                       for k in e.get("moa_keywords") or [] if len(k.strip()) >= 6})
+    if not symbols and not keywords:
+        return [], {}, 0
+    members: dict[str, str] = {}  # norm name -> pref_name
+    try:
+        with _graph_client().session() as session:
+            for r in session.run(CLASS_MEMBERS_QUERY, symbols=symbols,
+                                 actions=actions, keywords=keywords):
+                for n in r["names"] or []:
+                    members[n] = r["pref_name"] or n
+    except Exception as exc:  # noqa: BLE001
+        print(f"[class] KB unavailable: {exc}")
+        return [], {}, 0
+    if not members:
+        return [], {}, 0
+
+    from drug_kb import name_variants
+    by_nct: dict[str, dict] = {}
+    hit_member: dict[str, str] = {}
+    names = sorted(members, key=len, reverse=True)[:400]
+    must = []
+    phases = {_normalise_phase(p) for p in ((constraints or {}).get("phases") or [])} - {None}
+    if phases:
+        must.append(qmodels.FieldCondition(key="Phase", match=qmodels.MatchAny(any=sorted(phases))))
+    statuses = _status_set((constraints or {}).get("statuses"))
+    if statuses:
+        must.append(qmodels.FieldCondition(key="OverallStatus",
+                                           match=qmodels.MatchAny(any=sorted(statuses))))
+    try:
+        for i in range(0, len(names), 40):
+            flt = qmodels.Filter(must=must, should=[
+                qmodels.FieldCondition(key="studiedInterventionNames",
+                                       match=qmodels.MatchText(text=n))
+                for n in names[i:i + 40]])
+            offset, fetched = None, 0
+            while fetched < EXACT_FETCH_CEILING:
+                pts, offset = _client().scroll(
+                    COLLECTION_NAME, scroll_filter=flt, limit=256, offset=offset,
+                    with_payload=True, with_vectors=False)
+                for p in pts:
+                    pl = p.payload or {}
+                    nct = pl.get("NCTId")
+                    if not nct or nct in by_nct:
+                        continue
+                    # KB-verify: a studied agent must RESOLVE to a member.
+                    for sn in pl.get("studiedInterventionNames") or []:
+                        key = next((v for v in name_variants(sn) if v in members), None)
+                        if key:
+                            by_nct[nct] = _trial_from_payload(pl, "class_match")
+                            hit_member[nct] = members[key]
+                            break
+                fetched += len(pts)
+                if offset is None or not pts:
+                    break
+    except Exception as exc:  # noqa: BLE001 -- pre-v3 collection lacks the index
+        print(f"[class] Qdrant studied-name index unavailable: {exc}")
+        return [], {}, 0
+    trials = sorted(by_nct.values(), key=_trial_analyst_key)
+    return trials[:cap], hit_member, len(trials)
+
+
+# --- per-candidate constraint verification ---------------------------------
+class CandidateVerdicts(BaseModel):
+    nct_id: str = Field(description="Copied exactly from the candidate.")
+    verdicts: list[ConstraintVerdict] = Field(
+        default_factory=list,
+        description="One entry per constraint listed for this candidate, in "
+                    "the order given. verdict: 'satisfied' when the record "
+                    "explicitly meets it, 'violated' when the record "
+                    "explicitly contradicts it (different disease, different "
+                    "line of therapy, opposite design), 'not_stated' when the "
+                    "record does not say. evidence: a VERBATIM fragment "
+                    "(<= 160 chars) from the record that decides it -- "
+                    "checked against the record; a non-matching quote "
+                    "becomes not_stated. field: which record field it came "
+                    "from (conditions, title, summary, detailed_description, "
+                    "eligibility, design, interventions).")
+
+
+class VerifierBatch(BaseModel):
+    candidates: list[CandidateVerdicts] = Field(default_factory=list)
+
+
+VERIFIER_SYSTEM = """You verify whether clinical trial records satisfy the
+specific constraints an analyst asked for. For EACH candidate and EACH
+listed constraint return satisfied / violated / not_stated with a verbatim
+quote from the record as evidence. Rules:
+- Judge from the record text only. 'satisfied' needs explicit support (the
+  condition named in conditions/title/summary/eligibility; the line of
+  therapy or population stated; the design stated). Synonyms and direct
+  clinical equivalents count: NSCLC = non-small cell lung cancer; 1L =
+  first-line; T2D = type 2 diabetes; obesity = overweight/obese/weight
+  management/BMI >= 30 population; HFpEF = heart failure with preserved
+  ejection fraction. A trial whose population is defined by the asked
+  condition satisfies it even if the primary outcome is something else.
+- 'violated' ONLY when the record explicitly contradicts the constraint --
+  a trial in a different disease, a second-line trial when first-line was
+  asked, an open-label trial when double-blind was asked. A trial that
+  simply does not mention the constraint is 'not_stated', never violated.
+- A drug class constraint is satisfied when a STUDIED intervention is a
+  member of that class per the record's own description or a well-known
+  generic name (semaglutide IS a GLP-1 receptor agonist); a comparator or
+  background therapy of that class does not count.
+- Quote exactly; never paraphrase in `evidence`."""
+
+
+_DESIGN_CHECKS = {
+    "randomized": lambda d, roles: (d.get("allocation") or "").upper() == "RANDOMIZED",
+    "randomised": lambda d, roles: (d.get("allocation") or "").upper() == "RANDOMIZED",
+    "non-randomized": lambda d, roles: (d.get("allocation") or "").upper() == "NON_RANDOMIZED",
+    "open-label": lambda d, roles: (d.get("masking") or "").upper() == "NONE",
+    "open label": lambda d, roles: (d.get("masking") or "").upper() == "NONE",
+    "double-blind": lambda d, roles: (d.get("masking") or "").upper() in ("DOUBLE", "TRIPLE", "QUADRUPLE"),
+    "double blind": lambda d, roles: (d.get("masking") or "").upper() in ("DOUBLE", "TRIPLE", "QUADRUPLE"),
+    "blinded": lambda d, roles: (d.get("masking") or "").upper() not in ("", "NONE"),
+    "placebo-controlled": lambda d, roles: "placebo" in set(roles.values()),
+    "placebo controlled": lambda d, roles: "placebo" in set(roles.values()),
+    "single-arm": lambda d, roles: (d.get("interventionModel") or "").upper() == "SINGLE_GROUP",
+    "single arm": lambda d, roles: (d.get("interventionModel") or "").upper() == "SINGLE_GROUP",
+}
+
+
+def _deterministic_verdicts(trial: dict, constraints: dict,
+                            enforced: list[str], entity_tiers: dict[str, str],
+                            class_member: str | None) -> tuple[list[dict], list[str]]:
+    """Verdicts decidable from structured fields, plus the list of
+    constraint labels that still need the LLM verifier for this trial."""
+    verdicts: list[dict] = []
+    pending: list[str] = []
+    c = constraints or {}
+
+    for name, tier in entity_tiers.items():
+        verdicts.append({"constraint": f"drug studied: {name}", "verdict": "satisfied",
+                         "how": "deterministic", "evidence": tier, "field": "interventions"})
+    if "phase" in enforced and c.get("phases"):
+        verdicts.append({"constraint": f"phase: {', '.join(c['phases'])}", "verdict": "satisfied",
+                         "how": "deterministic", "evidence": ", ".join(trial.get("Phase") or []),
+                         "field": "Phase"})
+    if "status" in enforced and c.get("statuses"):
+        verdicts.append({"constraint": f"status: {', '.join(c['statuses'])}", "verdict": "satisfied",
+                         "how": "deterministic", "evidence": trial.get("OverallStatus") or "",
+                         "field": "OverallStatus"})
+    if "sponsor" in enforced and c.get("sponsor_names"):
+        verdicts.append({"constraint": f"sponsor: {', '.join(c['sponsor_names'])}",
+                         "verdict": "satisfied", "how": "deterministic",
+                         "evidence": trial.get("LeadSponsorName") or "", "field": "LeadSponsorName"})
+    if "start_year" in enforced:
+        verdicts.append({"constraint": "start year", "verdict": "satisfied",
+                         "how": "deterministic", "evidence": trial.get("StartDate") or "",
+                         "field": "StartDate"})
+    if "country" in enforced and c.get("countries"):
+        verdicts.append({"constraint": f"country: {', '.join(c['countries'])}",
+                         "verdict": "satisfied", "how": "deterministic",
+                         "evidence": ", ".join((trial.get("countries") or [])[:3]),
+                         "field": "countries"})
+
+    conds_text = " | ".join(c_ for c_ in (trial.get("conditions") or []) if isinstance(c_, str))
+    conds_kw = conds_text + " | " + " | ".join(trial.get("keywords") or [])
+    for ind in c.get("indications") or []:
+        pat = _alias_pattern(ind)
+        if pat and pat.search(conds_kw):
+            verdicts.append({"constraint": f"indication: {ind}", "verdict": "satisfied",
+                             "how": "deterministic", "evidence": conds_text[:160],
+                             "field": "conditions"})
+        else:
+            pending.append(f"indication: {ind}")
+
+    class_terms = list(c.get("drug_classes") or []) + list(c.get("targets") or [])
+    for term in class_terms:
+        if class_member:
+            verdicts.append({"constraint": f"class/target: {term}", "verdict": "satisfied",
+                             "how": "deterministic", "evidence": f"{class_member} (drug KB)",
+                             "field": "interventions"})
+        else:
+            pending.append(f"class/target: {term}")
+
+    design = trial.get("designInfo") or {}
+    roles = trial.get("interventionRoles") or {}
+    for d in c.get("design") or []:
+        chk = _DESIGN_CHECKS.get(d.lower().strip())
+        if chk and design and any(design.values()):
+            ok = chk(design, roles)
+            verdicts.append({"constraint": f"design: {d}",
+                             "verdict": "satisfied" if ok else "violated",
+                             "how": "deterministic",
+                             "evidence": ", ".join(f"{k}={v}" for k, v in design.items() if v),
+                             "field": "designInfo"})
+        else:
+            pending.append(f"design: {d}")
+
+    if c.get("setting"):
+        pending.append(f"setting: {c['setting']}")
+    return verdicts, pending
+
+
+def _candidate_text(trial: dict) -> str:
+    """Compact record for the verifier prompt (and the span check)."""
+    ivs = "; ".join(
+        f"{iv.get('name')} [{(trial.get('interventionRoles') or {}).get(iv.get('name'), '?')}]"
+        + (f": {iv['description'][:200]}" if iv.get("description") else "")
+        for iv in (trial.get("interventions") or []) if isinstance(iv, dict))
+    design = trial.get("designInfo") or {}
+    return (
+        f"NCT: {trial.get('NCTId')}\n"
+        f"title: {trial.get('BriefTitle') or ''}\n"
+        f"conditions: {', '.join(trial.get('conditions') or [])}\n"
+        f"keywords: {', '.join((trial.get('keywords') or [])[:12])}\n"
+        f"interventions: {ivs}\n"
+        f"design: {', '.join(f'{k}={v}' for k, v in design.items() if v)}\n"
+        f"summary: {(trial.get('BriefSummary') or '')[:900]}\n"
+        f"detailed_description: {(trial.get('DetailedDescription') or '')[:900]}\n"
+        f"eligibility: {(trial.get('EligibilityCriteria') or '')[:1200]}\n"
+    )
+
+
 def get_drug_mechanisms(names: list[str]) -> dict[str, dict]:
     """Deterministic mechanism facts for intervention names, from the
     drug KB build_drug_kb.py writes (Open Targets/ChEMBL + GtoPdb).
@@ -655,6 +934,33 @@ def _apply_query_constraints(trials: list[dict], constraints: dict | None
             unenforceable.append("country")
 
     return kept, enforced, unenforceable
+
+
+def _regex_constraints(question: str) -> dict:
+    """Phase / status / year qualifiers that need no model to read --
+    the fail-open floor for the intent classifier."""
+    q = question or ""
+    c = QueryConstraints()
+    for m in re.finditer(r"\bphase\s*(1|2|3|4|i{1,3}|iv)\b(?:\s*/\s*(1|2|3|4|i{1,3}|iv)\b)?",
+                         q, re.IGNORECASE):
+        for grp in (m.group(1), m.group(2)):
+            if grp:
+                p = _normalise_phase(grp.upper().replace("III", "3").replace("II", "2")
+                                     .replace("IV", "4").replace("I", "1"))
+                if p and p not in c.phases:
+                    c.phases.append(p)
+    if re.search(r"\b(recruiting|enrolling)\b", q, re.IGNORECASE):
+        c.statuses.append("RECRUITING")
+    elif re.search(r"\b(ongoing|active|current|live|open)\b", q, re.IGNORECASE):
+        c.statuses.append("live")
+    elif re.search(r"\bcompleted\b", q, re.IGNORECASE):
+        c.statuses.append("COMPLETED")
+    m = re.search(r"\b(?:since|from|after|started in)\s+(20\d\d)\b", q, re.IGNORECASE)
+    if m:
+        c.start_year_min = int(m.group(1))
+    if _COMBO_WORDS_RE.search(q):
+        c.combination_required = True
+    return c.model_dump()
 
 
 def _trial_analyst_key(t: dict) -> tuple:
@@ -2200,8 +2506,8 @@ LIMIT $limit
 # (intervention descriptions, detailed description) and the eligibility
 # block the verifier needs, bounded so a 150-row fanout stays affordable.
 _SUMMARY_CAP = 1200
-_DETAILED_CAP = 2500
-_ELIGIBILITY_CAP = 2000
+_DETAILED_CAP = 1800
+_ELIGIBILITY_CAP = 1200
 # v3 payload keys copied verbatim onto the trial dict (missing on
 # pre-migration points -- every consumer .get()s them).
 _TRIAL_V3_KEYS = ("OfficialTitle", "Acronym", "collaborators", "keywords",
@@ -2253,6 +2559,17 @@ def _neo4j_row_to_trial(r, source: str = "exact_match") -> dict:
 
 
 EXACT_FETCH_CEILING = 5000
+# Class queries can resolve to thousands of member trials; this many (in
+# analyst order) go through constraint verification before the POOL cap.
+CLASS_FETCH_CAP = int(os.getenv("CLASS_FETCH_CAP", "400"))
+VERIFIER_BATCH = 8
+CORRECTIVE_MIN_ROWS = 5
+MINI_ATTEMPTS = 6
+# Verifier policy per constraint kind when the record does not state it:
+# an indication or class the record never mentions means the trial is not
+# about it (exclude); a setting/design qualifier it omits is merely
+# unverifiable (keep, label).
+_DROP_ON_NOT_STATED = {"indication", "class/target"}
 
 
 def fetch_trials_exact(aliases: list[str], kind: str = "drug",
@@ -2589,6 +2906,8 @@ class AgentState(TypedDict):
     news_chunks: Optional[list[dict]]
     crl_chunks: Optional[list[dict]]
     drug_facts: Optional[dict]
+    constraint_report: Optional[list]
+    corrective_round_done: Optional[bool]
 
 
 AGENT_SYSTEM = """You are a life sciences market intelligence analyst.
@@ -3198,6 +3517,17 @@ def make_graph(model: str, verbose: bool = True, checkpointer=None):
         default_model="gpt-4o-mini",
     ).with_structured_output(TrialRow, include_raw=True)
 
+    # Constraint pipeline helpers, both on the mini tier: class/target
+    # phrases -> KB vocabulary (one call per query), and the per-candidate
+    # verifier (one call per VERIFIER_BATCH candidates).
+    class_llm = _build_gpt4o_llm(
+        30, model_env_var="EXTRACTION_MODEL_MINI", default_model="gpt-4o-mini",
+    ).with_structured_output(ClassExpansions)
+    verifier_llm = _build_gpt4o_llm(
+        EXTRACTION_TIMEOUT, model_env_var="EXTRACTION_MODEL_MINI",
+        default_model="gpt-4o-mini",
+    ).with_structured_output(VerifierBatch)
+
     # --- Reduce stage: prose only -- table_data is already fixed by the Map
     # stage, so this call carries far less risk than the old Synthesis call
     # did, but keeps the same validate-or-retry shape for consistency.
@@ -3225,6 +3555,14 @@ def make_graph(model: str, verbose: bool = True, checkpointer=None):
     # Claude, which was never close to that ceiling for this task.
     intent_llm = build_llm(INTENT_MODEL, max_tokens=1536, timeout=60) \
         .with_structured_output(IntentClassification, method="function_calling")
+    # Fallback classifier on OpenAI's mini tier: the provider-routed intent
+    # model (Kimi locally) intermittently returns no tool call at all, and
+    # failing open with NO constraints silently drops every qualifier the
+    # user typed -- the exact failure the constraint pipeline exists to
+    # prevent. One reliable structured call is worth far more than that.
+    intent_fallback_llm = _build_gpt4o_llm(
+        30, model_env_var="EXTRACTION_MODEL_MINI", default_model="gpt-4o-mini",
+    ).with_structured_output(IntentClassification)
 
     # --- node: IntentClassifier --------------------------------------------
     def intent_classifier_node(state: AgentState) -> dict:
@@ -3255,10 +3593,24 @@ def make_graph(model: str, verbose: bool = True, checkpointer=None):
                 print(f"  ✗ intent classifier returned no tool call "
                       f"(attempt {attempt + 1}/3) -- retrying")
         if verdict is None:
+            try:
+                verdict = intent_fallback_llm.invoke([
+                    SystemMessage(content=INTENT_SYSTEM),
+                    HumanMessage(content=question)])
+                if verbose and verdict is not None:
+                    print("  ↳ intent classifier: OpenAI fallback answered")
+            except Exception as exc:  # noqa: BLE001
+                if verbose:
+                    print(f"  ↳ intent fallback failed too: {exc}")
+                verdict = None
+        if verdict is None:
+            # Last resort: keep the cheap, unambiguous qualifiers so the
+            # deterministic filters still run.
             if verbose:
-                print("  ⚠ intent classifier failed 3/3 attempts -- "
-                      "failing open (treating as in-domain)")
-            return {"is_in_domain": True}
+                print("  ⚠ intent classifier failed every attempt -- "
+                      "failing open with regex-derived constraints")
+            return {"is_in_domain": True,
+                    "asked_constraints": _regex_constraints(question)}
         if verbose:
             _trace_intent(verdict)
         constraints = (verdict.constraints or QueryConstraints()).model_dump()
@@ -3542,7 +3894,11 @@ def make_graph(model: str, verbose: bool = True, checkpointer=None):
             # out, while an escalation burns one of the THREE gpt-4o slots
             # for ~20s -- at a 150-row fanout, letting every burst-429
             # escalate is what turns a 2-minute run into a 20-minute one.
-            for mini_attempt in range(2):
+            # Up to MINI_ATTEMPTS retry-after-guided retries: a mini 429 is
+            # transient and cheap to wait out, while escalating burns one
+            # of the THREE gpt-4o slots -- at a 150-row fanout that turns a
+            # 2-minute run into a 20-minute 429 storm on the 30K-TPM tier.
+            for mini_attempt in range(MINI_ATTEMPTS):
                 try:
                     out = extraction_llm_mini.invoke(messages)
                     parsed = out.get("parsed")
@@ -3558,14 +3914,15 @@ def make_graph(model: str, verbose: bool = True, checkpointer=None):
                         print(f"  ↳ {nct_id}: mini tier rejected ({why}) — escalating to gpt-4o")
                     break
                 except openai.RateLimitError as exc:
-                    if mini_attempt == 0:
+                    if mini_attempt < MINI_ATTEMPTS - 1:
                         m = _RETRY_AFTER_RE.search(str(exc))
-                        wait = min(float(m.group(1)), 30.0) + 1.0 if m else 5.0
+                        wait = (min(float(m.group(1)), 30.0) + 1.0 if m
+                                else 5.0 * (mini_attempt + 1))
                         if verbose:
                             print(f"  ↳ {nct_id}: mini tier 429, retrying in {wait:.1f}s")
                         time.sleep(wait)
                     elif verbose:
-                        print(f"  ↳ {nct_id}: mini tier 429 twice — escalating to gpt-4o")
+                        print(f"  ↳ {nct_id}: mini tier 429 x{MINI_ATTEMPTS} — escalating to gpt-4o")
                 except Exception as exc:  # noqa: BLE001 -- any other mini failure just escalates
                     if verbose:
                         print(f"  ↳ {nct_id}: mini tier errored ({exc}) — escalating to gpt-4o")
@@ -3627,6 +3984,8 @@ def make_graph(model: str, verbose: bool = True, checkpointer=None):
                                              iv.strip(), re.I)]
 
         _finalize_mechanism(row, studied, drug_facts, source_text)
+        row.constraints = [ConstraintVerdict(**v) for v in
+                           (state.get("constraint_report") or [])]
 
         if verbose:
             print(f"  ✓ {row.nct_id}  phase={row.phase!r}  "
@@ -3832,6 +4191,10 @@ def make_graph(model: str, verbose: bool = True, checkpointer=None):
         last = state["messages"][-1]
         if getattr(last, "tool_calls", None):
             return "tools"
+        # After a corrective round the agent may decline to search again;
+        # the pool prepared before that round must still be extracted.
+        if state.get("corrective_round_done") and (state.get("prepared_pools") or {}).get("trials"):
+            return "verify"
         return "synthesis"
 
     def _deduped_pools(state: AgentState) -> dict:
@@ -3941,6 +4304,8 @@ def make_graph(model: str, verbose: bool = True, checkpointer=None):
         coverage_note = None
         enforced: list[str] = []
         unenforceable: list[str] = []
+        entity_tiers: dict[str, dict[str, str]] = {}   # nct -> {entity: tier}
+        class_members: dict[str, str] = {}              # nct -> member pref_name
 
         if asked:
             drug_ents = [e for e in asked if e.get("kind", "drug") != "company"]
@@ -3995,6 +4360,11 @@ def make_graph(model: str, verbose: bool = True, checkpointer=None):
                 ok = all(hits) if require_all else any(hits)
                 if ok:
                     kept_trials.append(t)
+                    for (pats, kind, verified), ent, hit in zip(
+                            entity_patterns, filter_ents, hits):
+                        if hit:
+                            tier = _entity_match_tier(pats, t, kind) or "graph edge"
+                            entity_tiers.setdefault(t.get("NCTId"), {})[ent["name"]] = tier
                 elif any(_entity_match_tier(pats, t, kind) == "mentioned"
                          for pats, kind, _ in entity_patterns):
                     mentioned_only += 1
@@ -4048,10 +4418,62 @@ def make_graph(model: str, verbose: bool = True, checkpointer=None):
                 print(f"[prepare] constraint filter {enf}: "
                       f"{before} pooled -> {len(trials)}")
 
+            # CLASS / TARGET COMPLETENESS: resolve the asked class through
+            # the drug KB to its member substances and fetch every trial
+            # that STUDIES one of them -- the class analogue of the exact-
+            # entity backfill, so "GLP-1 agonists in obesity" is a verified
+            # member set with a true total, not kNN's nearest 60.
+            class_terms = (list(constraints.get("drug_classes") or [])
+                           + list(constraints.get("targets") or []))
+            if class_terms:
+                expansions: list[dict] = []
+                try:
+                    exp = _invoke_ratelimit_retry(class_llm, [
+                        SystemMessage(content=CLASS_EXPANSION_SYSTEM),
+                        HumanMessage(content="Phrases:\n" + "\n".join(
+                            f"- {t}" for t in class_terms)),
+                    ], label="class-expansion", verbose=verbose)
+                    expansions = [e.model_dump() for e in (exp.expansions if exp else [])]
+                except Exception as exc:  # noqa: BLE001
+                    print(f"[class] expansion failed: {exc}")
+                if verbose and expansions:
+                    for e in expansions:
+                        print(f"[class] {e['term']!r} -> symbols={e['target_symbols']} "
+                              f"actions={e['action_types']} kw={e['moa_keywords']}")
+                class_trials, members, class_total = fetch_trials_by_class(
+                    expansions, constraints, cap=CLASS_FETCH_CAP)
+                if class_trials:
+                    have = {t.get("NCTId") for t in trials}
+                    added = [t for t in class_trials if t["NCTId"] not in have]
+                    trials = trials + added
+                    class_members.update(members)
+                    # Pool rows that kNN found but the KB does not recognise
+                    # as class members stay -- the verifier judges them.
+                    total_matching = max(class_total, len(trials))
+                    enforced.append("class")
+                    if verbose:
+                        print(f"[class] {class_total} KB-verified member trials "
+                              f"(+{len(added)} new to the pool)")
+                    if class_total > CLASS_FETCH_CAP:
+                        coverage_note = (
+                            f"{class_total:,} trials in the corpus study a "
+                            f"{' / '.join(class_terms)} agent per the drug "
+                            f"database; the {CLASS_FETCH_CAP} most advanced and "
+                            f"most recent were verified against the remaining "
+                            f"constraints and the top {POOL_MAX_TRIALS} are shown.")
+
         if unenforceable:
             note = (f"Not enforced (records carry no such field): "
                     f"{', '.join(unenforceable)}.")
             coverage_note = f"{coverage_note} {note}" if coverage_note else note
+
+        # Constraints the verifier must judge per candidate keep a wider
+        # pool alive through the rerank/cap; verify_candidates applies the
+        # final POOL_MAX_TRIALS cap.
+        needs_verifier = bool(constraints.get("indications") or constraints.get("setting")
+                              or constraints.get("drug_classes") or constraints.get("targets")
+                              or constraints.get("design"))
+        pool_cap = CLASS_FETCH_CAP if needs_verifier else POOL_MAX_TRIALS
 
         # Question-aware ORDERING rerank (moved here from _deduped_pools);
         # for entity queries the pool is already exact, so the junk gate
@@ -4069,14 +4491,15 @@ def make_graph(model: str, verbose: bool = True, checkpointer=None):
                             f"{t.get('OverallStatus') or ''}. Conditions: "
                             f"{conds}. Interventions: {iv}. "
                             f"{(t.get('BriefSummary') or '')[:600]}")
-                ranked = _rr.rerank(question, trials, _pool_text,
-                                    top_k=POOL_MAX_TRIALS)
-                if asked:
-                    # Exact pool: every row satisfies the ask equally, so
-                    # the cap must follow the analyst ordering the coverage
-                    # note promises (latest phase, live, newest) -- not the
-                    # cross-encoder's opinion. Rerank scores stay on the
-                    # dicts for diagnostics only.
+                ranked = _rr.rerank(question, trials, _pool_text, top_k=pool_cap)
+                if asked or "class" in enforced:
+                    # Exact / KB-verified pool: every row satisfies the ask
+                    # equally, so the cap must follow the analyst ordering
+                    # the coverage note promises (latest phase, live,
+                    # newest) -- not the cross-encoder's opinion, which
+                    # scores a T2D semaglutide trial low against an obesity
+                    # question and would silently undo completeness. Rerank
+                    # scores stay on the dicts for diagnostics only.
                     trials = sorted(ranked, key=_trial_analyst_key)
                 else:
                     kept = [t for t in ranked
@@ -4089,7 +4512,7 @@ def make_graph(model: str, verbose: bool = True, checkpointer=None):
                     if len(kept) < _POOL_MIN_KEEP and not enforced:
                         kept = ranked[:max(_POOL_MIN_KEEP, len(kept))]
                     trials = kept
-        trials = trials[:POOL_MAX_TRIALS]
+        trials = trials[:pool_cap]
 
         # Drug KB facts for every studied agent in the final pool -- ONE
         # batched lookup here, broadcast to all workers as a shared pool
@@ -4103,12 +4526,177 @@ def make_graph(model: str, verbose: bool = True, checkpointer=None):
             print(f"[drug_kb] {len(studied_names)} studied agents -> "
                   f"{len(drug_facts)} resolved, {hit} with a mechanism")
 
+        # Per-trial "why this row": deterministic verdicts now, pending
+        # constraints for the verifier node next.
+        reports: dict[str, dict] = {}
+        for t in trials:
+            nct = t.get("NCTId")
+            verdicts, pending = _deterministic_verdicts(
+                t, constraints, enforced, entity_tiers.get(nct, {}),
+                class_members.get(nct))
+            reports[nct] = {"verdicts": verdicts, "pending": pending}
+
         pools["trials"] = trials
         pools["drug_facts"] = drug_facts
+        pools["constraint_reports"] = reports
         return {"prepared_pools": pools,
                 "trial_total_matching": total_matching,
                 "coverage_note": coverage_note,
                 "enforced_constraints": enforced}
+
+    def route_after_prepare(state: AgentState) -> str:
+        """One bounded corrective retrieval round for THIN class/topic
+        pools: when no exact entity was asked (entity pools are complete by
+        construction), fewer than CORRECTIVE_MIN_ROWS candidates survived
+        the deterministic filters, and the agent still has a tool round
+        left, hand control back to the agent with a note saying what to
+        broaden. Otherwise proceed to verification."""
+        if state.get("has_results") is False:
+            return "verify"
+        pools = state.get("prepared_pools") or {}
+        trials = pools.get("trials") or []
+        asked = [e for e in (state.get("asked_entities") or []) if isinstance(e, dict)]
+        rounds = state.get("tool_rounds", 0)
+        if (not asked and len(trials) < CORRECTIVE_MIN_ROWS
+                and rounds < 2 and not state.get("corrective_round_done")):
+            return "corrective"
+        return "verify"
+
+    def corrective_note_node(state: AgentState) -> dict:
+        pools = state.get("prepared_pools") or {}
+        n = len(pools.get("trials") or [])
+        c = state.get("asked_constraints") or {}
+        stated = {k: v for k, v in c.items() if v not in (None, False, [], "")}
+        note = (f"RETRIEVAL NOTE (system): only {n} candidate trial(s) satisfied "
+                f"the stated constraints {stated} after filtering. Call "
+                f"search_clinical_trials ONCE more with a broader or rephrased "
+                f"query (disease synonyms, generic drug names of the class, "
+                f"fewer qualifiers) and pass phase_filter when a phase was "
+                f"asked. Then stop searching.")
+        if verbose:
+            print(f"[corrective] {note}")
+        return {"messages": [HumanMessage(content=note)],
+                "corrective_round_done": True}
+
+    def verify_candidates_node(state: AgentState) -> dict:
+        """CRAG-style per-candidate verification of the constraints regex
+        cannot settle (indication without a conditions hit, setting / line
+        of therapy, class membership the KB could not confirm, design when
+        designInfo is absent). Batched mini-tier structured calls, each
+        verdict's quoted evidence checked verbatim against the record.
+        Policy: violated -> dropped; not_stated -> kept and labelled; the
+        final POOL_MAX_TRIALS cap is applied here."""
+        if state.get("has_results") is False:
+            return {}
+        pools = dict(state.get("prepared_pools") or {})
+        trials = list(pools.get("trials") or [])
+        reports = dict(pools.get("constraint_reports") or {})
+        if not trials:
+            return {}
+        todo = [t for t in trials if reports.get(t.get("NCTId"), {}).get("pending")]
+        dropped: list[str] = []
+        unverified = 0
+        if todo:
+            if verbose:
+                print(f"\n{'─' * 78}\n▶ NODE: verify_candidates  "
+                      f"({len(todo)} of {len(trials)} candidates need a verdict; "
+                      f"batches of {VERIFIER_BATCH})\n{'─' * 78}")
+
+            def _verify_batch(batch: list[dict]) -> dict[str, list[dict]]:
+                blocks = []
+                for t in batch:
+                    pend = reports[t["NCTId"]]["pending"]
+                    blocks.append(_candidate_text(t) + "constraints to verify:\n"
+                                  + "\n".join(f"  - {p}" for p in pend))
+                prompt = "CANDIDATES:\n\n" + "\n=====\n".join(blocks)
+                msgs = [SystemMessage(content=VERIFIER_SYSTEM), HumanMessage(content=prompt)]
+                with _extraction_mini_semaphore:
+                    try:
+                        out = _invoke_ratelimit_retry(verifier_llm, msgs,
+                                                      label="verify", verbose=False)
+                    except Exception as exc:  # noqa: BLE001
+                        print(f"[verify] batch failed: {exc}")
+                        out = None
+                result: dict[str, list[dict]] = {}
+                by_nct = {c.nct_id: c for c in (out.candidates if out else [])}
+                for t in batch:
+                    nct = t["NCTId"]
+                    pend = reports[nct]["pending"]
+                    record = _norm_ws(_candidate_text(t))
+                    got = {v.constraint: v for v in (by_nct.get(nct).verdicts
+                                                     if by_nct.get(nct) else [])}
+                    rows = []
+                    for p in pend:
+                        v = got.get(p) or next(
+                            (x for k, x in got.items() if k.split(":")[0] == p.split(":")[0]
+                             and k not in [r["constraint"] for r in rows]), None)
+                        if out is None:
+                            # Verifier unavailable: keep the row, say so.
+                            rows.append({"constraint": p, "verdict": "not_stated",
+                                         "how": "verifier_unavailable", "evidence": "",
+                                         "field": ""})
+                            continue
+                        verdict, ev, field = "not_stated", "", ""
+                        if v is not None:
+                            verdict = (v.verdict or "not_stated").lower()
+                            ev, field = (v.evidence or "").strip(), (v.field or "")
+                            if verdict in ("satisfied", "violated") and \
+                                    not _evidence_in_source(ev, record):
+                                verdict, ev = "not_stated", ""
+                        rows.append({"constraint": p, "verdict": verdict,
+                                     "how": "verifier", "evidence": ev[:200],
+                                     "field": field})
+                    result[nct] = rows
+                return result
+
+            batches = [todo[i:i + VERIFIER_BATCH] for i in range(0, len(todo), VERIFIER_BATCH)]
+            from concurrent.futures import ThreadPoolExecutor
+            with ThreadPoolExecutor(max_workers=EXTRACTION_MINI_CONCURRENCY) as ex:
+                for res in ex.map(_verify_batch, batches):
+                    for nct, rows in res.items():
+                        reports[nct]["verdicts"] = reports[nct]["verdicts"] + rows
+                        reports[nct]["pending"] = []
+                        if any(r["verdict"] == "violated" or (
+                                r["verdict"] == "not_stated" and r["how"] == "verifier"
+                                and r["constraint"].split(":")[0] in _DROP_ON_NOT_STATED)
+                               for r in rows):
+                            dropped.append(nct)
+                            if verbose and len(dropped) <= 6:
+                                why = "; ".join(f"{r['constraint']} -> {r['verdict']}"
+                                                f"{' (' + r['evidence'][:80] + ')' if r['evidence'] else ''}"
+                                                for r in rows)
+                                t_ = next(t for t in trials if t["NCTId"] == nct)
+                                print(f"[verify]   excluded {nct} "
+                                      f"[{', '.join((t_.get('conditions') or [])[:3])}]: {why}")
+                        elif any(r["verdict"] == "not_stated" for r in rows):
+                            unverified += 1
+            trials = [t for t in trials if t["NCTId"] not in dropped]
+            if verbose:
+                print(f"[verify] {len(todo)} judged: {len(dropped)} excluded "
+                      f"(contradicted, or indication/class not in record), "
+                      f"{unverified} unverified (kept, labelled)")
+
+        trials = trials[:POOL_MAX_TRIALS]
+        pools["trials"] = trials
+        pools["constraint_reports"] = reports
+        total = state.get("trial_total_matching")
+        if total is not None and dropped:
+            total = max(len(trials), total - len(dropped))
+        note = state.get("coverage_note")
+        enforced = state.get("enforced_constraints") or []
+        bits = []
+        if enforced:
+            bits.append(f"enforced on every row: {', '.join(sorted(set(enforced)))}")
+        if todo:
+            bits.append(f"verified per trial: {len(todo) - len(dropped)} kept, "
+                        f"{len(dropped)} excluded because the record contradicts "
+                        f"or never states the asked indication/class, "
+                        f"{unverified} kept but unverifiable from the record")
+        if bits:
+            extra = "Constraints -- " + "; ".join(bits) + "."
+            note = f"{note} {extra}" if note else extra
+        return {"prepared_pools": pools, "trial_total_matching": total,
+                "coverage_note": note}
 
     def continue_to_extraction(state: AgentState):
         """Conditional edge from `tools` -- the Mapper.
@@ -4165,8 +4753,10 @@ def make_graph(model: str, verbose: bool = True, checkpointer=None):
                 print(f"    • Send(\"extract_trial\", single_trial={t.get('NCTId')})")
 
         drug_facts = pools.get("drug_facts") or {}
+        reports = pools.get("constraint_reports") or {}
         return [Send("extract_trial",
                      {"single_trial": t, "literature": pools["literature"],
+                      "constraint_report": (reports.get(t.get("NCTId")) or {}).get("verdicts", []),
                       "fda_records": pools["fda_records"],
                       "pubmed_chunks": pools["pubmed_chunks"],
                       "sec_chunks": pools["sec_chunks"],
@@ -4189,6 +4779,8 @@ def make_graph(model: str, verbose: bool = True, checkpointer=None):
     g.add_node("tools", tools_node)
     g.add_node("no_results_fallback", no_results_fallback_node)
     g.add_node("prepare_extraction", prepare_extraction_node)
+    g.add_node("corrective_note", corrective_note_node)
+    g.add_node("verify_candidates", verify_candidates_node)
     g.add_node("extract_trial", extract_trial_node)
     g.add_node("synthesize_table", synthesize_table_node)
 
@@ -4197,14 +4789,22 @@ def make_graph(model: str, verbose: bool = True, checkpointer=None):
                             {"agent": "agent", "out_of_domain": "out_of_domain"})
     g.add_edge("out_of_domain", END)
 
-    g.add_conditional_edges("agent", route, {"tools": "tools", "synthesis": "synthesize_table"})
+    g.add_conditional_edges("agent", route, {"tools": "tools", "synthesis": "synthesize_table",
+                                             "verify": "verify_candidates"})
     # `tools` fans out via Send (Map), falls through to NoResultsFallback, or
     # (federated-retrieval edge case: literature grounded the round but no
     # trial was retrieved to attach it to) goes straight to the Reducer --
     # continue_to_extraction returns whichever fits; path_map only needs to
     # cover the plain-string branches, Send objects are used directly.
     g.add_edge("tools", "prepare_extraction")
-    g.add_conditional_edges("prepare_extraction", continue_to_extraction,
+    # prepare -> (thin class pool? one corrective agent round) -> verify
+    # -> Send fanout. The corrective path re-enters agent -> tools ->
+    # prepare, bounded by tool_rounds and the corrective_round_done flag.
+    g.add_conditional_edges("prepare_extraction", route_after_prepare,
+                            {"corrective": "corrective_note",
+                             "verify": "verify_candidates"})
+    g.add_edge("corrective_note", "agent")
+    g.add_conditional_edges("verify_candidates", continue_to_extraction,
                             {"no_results_fallback": "no_results_fallback",
                              "synthesize_table": "synthesize_table"})
     g.add_edge("no_results_fallback", END)
