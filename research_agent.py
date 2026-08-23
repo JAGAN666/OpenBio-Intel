@@ -75,6 +75,7 @@ from __future__ import annotations
 
 import argparse
 import json
+from collections import Counter
 import operator
 import os
 import re
@@ -6418,8 +6419,31 @@ def main() -> int:
               f"{sum(1 for r in result.table_data if r.interventions)}/{len(row_ids)}")
         n_desc = sum(1 for r in result.table_data if r.mechanism_described)
         print(f"  mechanism_described = true   : {n_desc}/{len(row_ids)}")
+        hist = Counter(r.mechanism_source or "unknown" for r in result.table_data)
+        print(f"  mechanism provenance         : "
+              + ", ".join(f"{k}={v}" for k, v in sorted(hist.items())))
+        verdicts = Counter((c.verdict, c.how) for r in result.table_data
+                           for c in (r.constraints or []))
+        if verdicts:
+            print(f"  constraint verdicts          : "
+                  + ", ".join(f"{v}/{h}={n}" for (v, h), n in sorted(verdicts.items())))
+        # Span validity: every trial_text mechanism must quote its own record.
+        by_nct = {t.get("NCTId"): t for t in
+                  (final.get("prepared_pools") or {}).get("trials") or []}
+        bad_spans = []
+        for r in result.table_data:
+            if r.mechanism_source == "trial_text" and r.nct_id in by_nct:
+                rec = _norm_ws(json.dumps(by_nct[r.nct_id]))
+                ev = re.sub(r"^\[NCT\d+\]\s*", "", r.mechanism_evidence or "")
+                if ev and not r.mechanism_evidence.startswith("[NCT") \
+                        and not _evidence_in_source(ev, rec):
+                    bad_spans.append(r.nct_id)
+        print(f"  mechanism span validity      : "
+              f"{'all verified' if not bad_spans else 'INVALID ' + str(bad_spans)}")
 
     ok = True
+    if row_ids and bad_spans:
+        print(f"  ✗ FAIL — trial_text mechanism quotes not found in record: {bad_spans}"); ok = False
     if not isinstance(result, SmartTableResponse):
         print("  ✗ FAIL — not a SmartTableResponse instance"); ok = False
     if bad_cites:
