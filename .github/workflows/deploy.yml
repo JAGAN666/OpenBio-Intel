@@ -75,6 +75,7 @@ jobs:
       # schema.
       - name: Run test suite
         run: |
+          docker compose up -d --wait postgres
           uv sync --locked
           uv run pytest -q
 
