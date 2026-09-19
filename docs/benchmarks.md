@@ -38,6 +38,18 @@ uv run python eval/build_golden.py
 
 `eval/baseline.json` holds the committed baseline; improving retrieval means beating it and deliberately re-recording (`--write-baseline`), which makes every quality change a reviewable diff.
 
+## Answer-level gates (beyond retrieval)
+
+Recall@20 measures the candidate stage. Two further suites measure what the analyst actually sees — the table — because a retrieval win can still produce rows that don't satisfy the question:
+
+| Suite | What it measures | Runs |
+|---|---|---|
+| `eval/test_constraints_unit.py`, `eval/test_mechanism_unit.py`, `eval/test_drug_kb_unit.py` | The deterministic primitives: studied-vs-mentioned matching, AND semantics for combinations, phase/status/sponsor filters, mechanism provenance rules, span verification, drug-name normalisation | always (no services) |
+| `eval/test_mechanism.py` | Drug-KB **coverage** and **correctness** over `eval/golden_mechanisms.jsonl` (35 approved drugs incl. brand/code aliases, 10 investigational codes, abstention on unknowns). Current: approved 35/35 covered, 35/35 correct; investigational 9/10, 9/9 | Neo4j with `build_drug_kb.py` run; end-to-end layer with `RUN_LLM_EVALS=1` |
+| `eval/test_constraints.py` | **Per-constraint precision** over `eval/golden_constraints.jsonl` (30 analyst questions): every returned row is checked against the question's rules — studied drug (≥0.95), combination (≥0.95), phase/status (≥0.98), sponsor (≥0.95), indication (≥0.90), mechanism class (≥0.85) — plus strict all-constraints row precision (≥0.85), candidate-stage recall over known NCT ids, and whether the intent layer surfaced every qualifier typed | `RUN_LLM_EVALS=1` (runs the full graph) |
+
+The `(query, trial, constraint)` shape follows TrialGPT-style criterion-level evaluation: the aggregate score is decomposed so a regression names the constraint kind that broke.
+
 ## Known honest caveats
 
 - 50 queries is a regression harness, not an academic benchmark; the point is that changes are measured on a fixed, committed set.

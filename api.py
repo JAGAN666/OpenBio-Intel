@@ -189,7 +189,8 @@ def _initial_state(query: str, tenant_id: str | None = None) -> dict:
         "retrieved_trials": [], "extracted_rows": [], "retrieved_literature": [],
         "retrieved_fda": [], "retrieved_crls": [], "retrieved_safety": [],
         "retrieved_exclusivity": [], "retrieved_stats": [],
-        "asked_entities": [], "prepared_pools": None,
+        "asked_entities": [], "asked_constraints": {},
+        "enforced_constraints": [], "prepared_pools": None,
         "trial_total_matching": None, "coverage_note": None,
     }
 
@@ -540,12 +541,13 @@ def catalysts(req: CatalystRequest) -> CatalystTimeline:
 # query string -- these endpoints do no LLM/Qdrant/Neo4j work at all.
 # =============================================================================
 EXCEL_HEADERS = ["NCT ID", "Indication", "Phase", "Status", "Sponsor", "Interventions",
-                 "Mechanism / Findings", "Mechanism Described", "Sources"]
+                 "Mechanism", "Mechanism Source", "Mechanism Evidence", "Findings",
+                 "Constraints", "Sources"]
 # Column widths tuned for this schema's actual content shape (mechanism text
 # runs long, phase/sponsor are short) -- not left at openpyxl's default,
 # which would make the export technically correct but unreadable without
 # the analyst manually resizing every column first.
-EXCEL_COLUMN_WIDTHS = [14, 30, 14, 20, 28, 34, 70, 18, 46]
+EXCEL_COLUMN_WIDTHS = [14, 30, 14, 20, 28, 34, 40, 18, 40, 70, 40, 46]
 EXCEL_HEADER_FILL = "1E3A5F"  # matches the frontend's sky-900-ish header tone
 
 
@@ -578,8 +580,16 @@ def export_excel(data: SmartTableResponse) -> Response:
             row.status,
             row.sponsor,
             ", ".join(row.interventions),
+            row.mechanism or "",
+            MECHANISM_SOURCE_LABELS.get(row.mechanism_source or "unknown",
+                                        row.mechanism_source or ""),
+            row.mechanism_evidence or "",
             row.mechanism_or_findings,
-            "Yes" if row.mechanism_described else "No",
+            "\n".join(
+                f"{'✓' if c.verdict == 'satisfied' else '✗' if c.verdict == 'violated' else '?'} "
+                f"{c.constraint}" + (f" — {c.evidence}" if c.evidence else "")
+                for c in (row.constraints or [])
+            ),
             # One "reference (url)" per citation, newline-separated -- Excel
             # renders \n inside a cell fine and analysts can copy the URLs.
             "\n".join(
@@ -602,7 +612,16 @@ def export_excel(data: SmartTableResponse) -> Response:
     )
 
 
-PPTX_COLUMNS = ["NCT ID", "Sponsor", "Phase", "Interventions", "Mechanism / Findings"]
+PPTX_COLUMNS = ["NCT ID", "Sponsor", "Phase", "Interventions", "Mechanism", "Findings"]
+# Human labels for TrialRow.mechanism_source -- the provenance tier an
+# analyst sees in exports (the frontend renders the same tiers as badges).
+MECHANISM_SOURCE_LABELS = {
+    "kb": "Database (Open Targets/ChEMBL, IUPHAR)",
+    "trial_text": "Cited from trial record",
+    "literature": "Cited from literature",
+    "model_knowledge": "Model-supplied (unverified)",
+    "unknown": "Not on record",
+}
 # Verified directly against a live render (not guessed): 8 data rows + 1
 # header row on a Title-Only layout's default content area (0.3"-9.7"
 # wide, 1.3"-6.8" tall on a standard 10x7.5" slide) keeps each cell's text
@@ -669,8 +688,11 @@ def export_pptx(data: SmartTableResponse) -> Response:
             _set_pptx_header_cell(table.cell(0, c), col_name)
 
         for r, row in enumerate(chunk, start=1):
+            mech = row.mechanism or "—"
+            if row.mechanism_source == "model_knowledge":
+                mech += " (unverified)"
             values = [row.nct_id, row.sponsor, row.phase,
-                     ", ".join(row.interventions), row.mechanism_or_findings]
+                     ", ".join(row.interventions), mech, row.mechanism_or_findings]
             for c, val in enumerate(values):
                 _set_pptx_data_cell(table.cell(r, c), val)
 

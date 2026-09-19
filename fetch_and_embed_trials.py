@@ -53,6 +53,7 @@ from qdrant_client.http import models as qmodels
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
+import ct_schema
 from embeddings import EMBEDDING_MODEL, embed_documents, vector_params
 
 try:  # optional: lets .env supply S3_BUCKET / AWS_* without exporting them
@@ -66,18 +67,7 @@ except ImportError:  # pragma: no cover
 API_URL = "https://clinicaltrials.gov/api/v2/studies"
 MAX_PAGE_SIZE = 100  # API v2 hard cap
 
-API_FIELDS = [
-    "protocolSection.identificationModule.nctId",
-    "protocolSection.identificationModule.briefTitle",
-    "protocolSection.designModule.phases",
-    "protocolSection.statusModule.overallStatus",
-    "protocolSection.sponsorCollaboratorsModule.leadSponsor.name",
-    "protocolSection.descriptionModule.briefSummary",
-    # --- payload enrichment ---------------------------------------------
-    "protocolSection.conditionsModule.conditions",
-    "protocolSection.armsInterventionsModule.interventions",
-    "protocolSection.designModule.studyType",
-]
+API_FIELDS = ct_schema.API_FIELDS  # shared with every ingest path
 
 # --- sinks -------------------------------------------------------------------
 PROJECT_ROOT = Path(__file__).resolve().parent
@@ -108,16 +98,7 @@ COLLECTION_NAME = "clinical_trials"
 # making re-runs an idempotent upsert instead of creating duplicates.
 NCT_NAMESPACE = uuid.UUID("6f3a1d4c-9b2e-4c7a-8f11-0d5e2a7c4b93")
 
-# The API emits enum tokens ("PHASE3"); queries filter on the human form
-# ("Phase 3"). Normalising on WRITE is what makes that filter match at all.
-PHASE_LABELS = {
-    "EARLY_PHASE1": "Early Phase 1",
-    "PHASE1": "Phase 1",
-    "PHASE2": "Phase 2",
-    "PHASE3": "Phase 3",
-    "PHASE4": "Phase 4",
-    "NA": "Not Applicable",
-}
+PHASE_LABELS = ct_schema.PHASE_LABELS
 
 
 # =============================================================================
@@ -304,124 +285,51 @@ def archive_to_s3(
 # =============================================================================
 # 4. TRANSFORM + INDEX
 # =============================================================================
-def extract_interventions(proto: dict) -> list[dict]:
-    """protocolSection.armsInterventionsModule.interventions -> [{type, name}].
-
-    Every level uses .get() with a default: armsInterventionsModule is absent
-    on observational studies, and an individual intervention can lack `type`.
-    """
-    raw = proto.get("armsInterventionsModule", {}).get("interventions", []) or []
-    out = []
-    for iv in raw:
-        if not isinstance(iv, dict):
-            continue
-        name = (iv.get("name") or "").strip()
-        if not name:
-            continue  # an unnamed intervention is not filterable or citable
-        out.append({"type": (iv.get("type") or "UNKNOWN").strip(), "name": name})
-    return out
+extract_interventions = ct_schema.extract_interventions
+build_trial_payload = ct_schema.build_trial_payload
+build_embedding_text = ct_schema.build_embedding_text
 
 
-def build_embedding_text(
-    conditions: list[str],
-    interventions: list[dict],
-    study_type: str | None,
-    summary: str,
-) -> str:
-    """The enriched string handed to the embedding model.
-
-        Conditions: <c1>, <c2>
-        Interventions: <TYPE>: <name>, <TYPE>: <name>
-        Study Type: <studyType>
-        Summary: <briefSummary>
-
-    Structured lines lead, then the full narrative summary. Under the previous
-    all-MiniLM-L6-v2 model that ordering was load-bearing -- its tokenizer
-    truncated at 128 tokens, so only the leading text was ever vectorized.
-    nomic-embed-text-v1.5 has an 8192-token window and the longest enriched
-    document here is ~726 tokens, so nothing is truncated now and the ordering
-    is merely a readability convention.
-    """
-    iv_str = ", ".join(f"{iv['type']}: {iv['name']}" for iv in interventions)
-    return (
-        f"Conditions: {', '.join(conditions) if conditions else 'Not specified'}\n"
-        f"Interventions: {iv_str if iv_str else 'Not specified'}\n"
-        f"Study Type: {study_type or 'Not specified'}\n"
-        f"Summary: {summary}"
-    )
+def build_record(study: dict, s3_key: str | None) -> dict | None:
+    """One Qdrant-ready {document, id, payload} record, or None when the
+    study has no id / no summary. The single shape every ingest path
+    (incremental, bulk seed, daily updater) writes."""
+    payload = build_trial_payload(study, s3_key)
+    if payload is None:
+        return None
+    return {
+        "document": build_embedding_text(payload),
+        "id": str(uuid.uuid5(NCT_NAMESPACE, payload["NCTId"])),
+        "payload": payload,
+    }
 
 
 def build_records(studies: list[dict], s3_key: str | None) -> list[dict]:
     records: dict[str, dict] = {}
     no_summary = 0
-    enrich_stats = {"conditions": 0, "interventions": 0, "studyType": 0}
+    enrich_stats = {"conditions": 0, "interventions": 0, "studied": 0,
+                    "descriptions": 0, "start_date": 0}
 
     for study in studies:
-        proto = study.get("protocolSection", {})
-        ident = proto.get("identificationModule", {})
-        nct_id = ident.get("nctId")
-        if not nct_id:
-            continue
-
-        summary = (proto.get("descriptionModule", {}).get("briefSummary") or "").strip()
-        if not summary:
-            # Nothing to vectorize -- an empty-content vector would still
-            # compete for search slots while carrying no meaning.
+        rec = build_record(study, s3_key)
+        if rec is None:
             no_summary += 1
             continue
-
-        raw_phases = proto.get("designModule", {}).get("phases", []) or []
-
-        # --- payload enrichment (all .get()-guarded) ----------------------
-        conditions = proto.get("conditionsModule", {}).get("conditions", []) or []
-        interventions = extract_interventions(proto)
-        study_type = proto.get("designModule", {}).get("studyType")
-
-        if conditions:
-            enrich_stats["conditions"] += 1
-        if interventions:
-            enrich_stats["interventions"] += 1
-        if study_type:
-            enrich_stats["studyType"] += 1
-
-        records[nct_id] = {
-            # the enriched string is what gets vectorized
-            "document": build_embedding_text(conditions, interventions, study_type, summary),
-            "id": str(uuid.uuid5(NCT_NAMESPACE, nct_id)),
-            "payload": {
-                "NCTId": nct_id,
-                "BriefTitle": ident.get("briefTitle") or "(no title)",
-                "Phase": [PHASE_LABELS.get(p, p) for p in raw_phases],
-                "OverallStatus": proto.get("statusModule", {}).get("overallStatus"),
-                "LeadSponsorName": proto.get("sponsorCollaboratorsModule", {})
-                .get("leadSponsor", {})
-                .get("name"),
-
-                # --- enriched structured metadata -------------------------
-                "conditions": conditions,          # ["Breast Carcinoma", ...]
-                "interventions": interventions,    # [{"type": "DRUG", "name": "..."}]
-                "studyType": study_type,
-                # Flattened drug names. The raw `interventions` array above is
-                # the spec'd shape, but a list of dicts cannot back a plain
-                # keyword index -- this parallel list is what makes exact-match
-                # filtering on a drug name a one-line MatchValue condition.
-                "interventionNames": [iv["name"] for iv in interventions],
-
-                "BriefSummary": summary,           # unenriched text, for display
-                "SourceURL": f"https://clinicaltrials.gov/study/{nct_id}",
-                # lineage: which archived object this point was derived from
-                "SourceS3Key": s3_key,
-            },
-        }
+        pl = rec["payload"]
+        enrich_stats["conditions"] += bool(pl.get("conditions"))
+        enrich_stats["interventions"] += bool(pl.get("interventions"))
+        enrich_stats["studied"] += bool(pl.get("studiedInterventionNames"))
+        enrich_stats["descriptions"] += any(
+            iv.get("description") for iv in pl.get("interventions") or [])
+        enrich_stats["start_date"] += bool(pl.get("StartDate"))
+        records[pl["NCTId"]] = rec
 
     if no_summary:
-        print(f"[index]   skipped {no_summary} study/studies with no BriefSummary")
+        print(f"[index]   skipped {no_summary} study/studies with no id/BriefSummary")
     n = len(records)
     print(f"[index]   {n} records ready to embed")
     print(f"[index]   enrichment coverage: "
-          f"conditions {enrich_stats['conditions']}/{n}, "
-          f"interventions {enrich_stats['interventions']}/{n}, "
-          f"studyType {enrich_stats['studyType']}/{n}")
+          + ", ".join(f"{k} {v}/{n}" for k, v in enrich_stats.items()))
     return list(records.values())
 
 
@@ -465,16 +373,35 @@ def ensure_collection(client: QdrantClient, recreate: bool) -> None:
     # reason Qdrant was chosen. Without them, filtering is a full scan.
     # `interventionNames` and `conditions` are what enable exact-match drug /
     # indication filtering alongside vector similarity.
-    indexed = ("Phase", "OverallStatus", "LeadSponsorName", "NCTId",
-               "conditions", "interventionNames", "studyType")
-    for field in indexed:
+    ensure_payload_indexes(client, COLLECTION_NAME)
+
+
+def ensure_payload_indexes(client: QdrantClient, collection_name: str) -> None:
+    """Idempotent index set for a trials collection -- keyword indexes
+    for exact filters, integer for year ranges, and WORD-tokenized
+    full-text on the name fields the exact-entity scroll uses
+    (MatchText needs a text index, not keyword)."""
+    keyword = ("Phase", "OverallStatus", "NCTId", "conditions",
+               "studyType", "countries")
+    for field in keyword:
         client.create_payload_index(
-            collection_name=COLLECTION_NAME,
-            field_name=field,
-            field_schema=qmodels.PayloadSchemaType.KEYWORD,
-            wait=True,
-        )
-    print(f"[index]   payload indexes: {', '.join(indexed)}")
+            collection_name=collection_name, field_name=field,
+            field_schema=qmodels.PayloadSchemaType.KEYWORD, wait=True)
+    client.create_payload_index(
+        collection_name=collection_name, field_name="StartYear",
+        field_schema=qmodels.PayloadSchemaType.INTEGER, wait=True)
+    text_schema = qmodels.TextIndexParams(
+        type=qmodels.TextIndexType.TEXT,
+        tokenizer=qmodels.TokenizerType.WORD,
+        min_token_len=2, max_token_len=40, lowercase=True)
+    for field in ("interventionNames", "studiedInterventionNames",
+                  "LeadSponsorName", "collaborators"):
+        client.create_payload_index(
+            collection_name=collection_name, field_name=field,
+            field_schema=text_schema, wait=True)
+    print(f"[index]   payload indexes: {', '.join(keyword)}, StartYear, "
+          f"text(interventionNames, studiedInterventionNames, "
+          f"LeadSponsorName, collaborators)")
 
 
 def index_records(
