@@ -50,6 +50,7 @@ import json
 import logging
 import os
 import time
+from datetime import datetime, timezone
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any, AsyncIterator
@@ -60,7 +61,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import Response, StreamingResponse
 from langchain_core.messages import HumanMessage
 from openpyxl import Workbook
-from openpyxl.styles import Font, PatternFill
+from openpyxl.styles import Alignment, Font, PatternFill
 from openpyxl.utils import get_column_letter
 from pptx import Presentation
 from pptx.util import Inches, Pt
@@ -532,12 +533,15 @@ def catalysts(req: CatalystRequest) -> CatalystTimeline:
 
 
 # =============================================================================
-# EXECUTIVE EXPORT -- POST a SmartTableResponse the frontend already has in
-# state (from either /api/research or /api/research/stream's `result` event)
-# back to the server to render as a downloadable file. Deliberately NOT
-# re-running the agent: the export is of whatever the analyst is already
-# looking at, so the request body IS the SmartTableResponse itself, not a
-# query string -- these endpoints do no LLM/Qdrant/Neo4j work at all.
+# EXECUTIVE EXPORT -- POST the result payload the frontend already has in
+# state (from /api/research, /api/research/stream's `result` event, or a
+# completed job) back to the server to render as a downloadable file.
+# Deliberately NOT re-running the agent: the export is whatever the analyst
+# is already looking at (result JSON), not a fresh query to the graph --
+# these endpoints do no LLM/Qdrant/Neo4j work at all.
+#   POST /api/export/excel -> ExcelExportRequest (SmartTableResponse fields
+#       plus optional `query` for the Summary sheet)
+#   POST /api/export/pptx  -> SmartTableResponse
 # =============================================================================
 EXCEL_HEADERS = ["NCT ID", "Indication", "Phase", "Status", "Sponsor", "Interventions",
                  "Mechanism / Findings", "Mechanism Described", "Sources"]
@@ -547,20 +551,53 @@ EXCEL_HEADERS = ["NCT ID", "Indication", "Phase", "Status", "Sponsor", "Interven
 # the analyst manually resizing every column first.
 EXCEL_COLUMN_WIDTHS = [14, 30, 14, 20, 28, 34, 70, 18, 46]
 EXCEL_HEADER_FILL = "1E3A5F"  # matches the frontend's sky-900-ish header tone
+EXCEL_SUMMARY_LABEL_WIDTH = 22
+EXCEL_SUMMARY_VALUE_WIDTH = 90
+EXCEL_SUMMARY_QUERY_PLACEHOLDER = "(not provided)"
+
+
+class ExcelExportRequest(SmartTableResponse):
+    query: str | None = Field(
+        default=None,
+        description="Original analyst question; omitted when the client only has the result payload.",
+    )
+
+
+def _populate_summary_sheet(ws, data: ExcelExportRequest) -> None:
+    """Key/value metadata so a forwarded .xlsx is self-describing."""
+    ws.title = "Summary"
+    question = (data.query or "").strip() or EXCEL_SUMMARY_QUERY_PLACEHOLDER
+    generated_at = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+    rows = [
+        ("Original Question", question),
+        ("Narrative Summary", data.narrative_summary),
+        ("Row Count", len(data.table_data)),
+        ("Generated At", generated_at),
+    ]
+    wrap = Alignment(wrap_text=True, vertical="top")
+    label_font = Font(bold=True)
+    for r, (label, value) in enumerate(rows, start=1):
+        ws.cell(row=r, column=1, value=label).font = label_font
+        value_cell = ws.cell(row=r, column=2, value=value)
+        if r in (1, 2):
+            value_cell.alignment = wrap
+    ws.column_dimensions["A"].width = EXCEL_SUMMARY_LABEL_WIDTH
+    ws.column_dimensions["B"].width = EXCEL_SUMMARY_VALUE_WIDTH
 
 
 @app.post("/api/export/excel")
-def export_excel(data: SmartTableResponse) -> Response:
-    """table_data -> one formatted sheet, .xlsx. Fully in-memory (io.BytesIO)
-    -- these exports are at most a few hundred rows, nowhere near large
-    enough to justify streaming the workbook to disk first.
+def export_excel(data: ExcelExportRequest) -> Response:
+    """SmartTableResponse (+ optional query) -> Summary sheet + Clinical Trials
+    data sheet, .xlsx. Fully in-memory (io.BytesIO) -- these exports are at
+    most a few hundred rows, nowhere near large enough to justify streaming
+    the workbook to disk first.
 
     No auth gate -- see the module docstring's AUTH NOTE.
     """
     log.info("export xlsx: %d rows", len(data.table_data))
     wb = Workbook()
-    ws = wb.active
-    ws.title = "Clinical Trials"
+    _populate_summary_sheet(wb.active, data)
+    ws = wb.create_sheet("Clinical Trials")
 
     ws.append(EXCEL_HEADERS)
     header_fill = PatternFill(start_color=EXCEL_HEADER_FILL, end_color=EXCEL_HEADER_FILL,
