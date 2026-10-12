@@ -1,0 +1,3 @@
+User-agent: *
+Allow: /
+Sitemap: https://openbiointel.com/sitemap.xml

@@ -1,0 +1,472 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>OpenBio-Intel — open-source biopharma intelligence with citations</title>
+<meta name="description" content="Ask questions about clinical trials, FDA approvals and rejections, literature and SEC filings. Every answer cites the primary record it came from. Open source, self-hosted, MIT licensed.">
+<link rel="canonical" href="https://openbiointel.com/">
+<meta name="theme-color" content="#F2F3EE" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#121A17" media="(prefers-color-scheme: dark)">
+
+<meta property="og:type" content="website">
+<meta property="og:url" content="https://openbiointel.com/">
+<meta property="og:title" content="OpenBio-Intel">
+<meta property="og:description" content="Open-source biopharma intelligence. Every claim cites a real record: NCT IDs, FDA applications, PMCIDs, SEC accession numbers.">
+<meta property="og:image" content="https://openbiointel.com/assets/og.png">
+<meta name="twitter:card" content="summary_large_image">
+
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=Public+Sans:wght@400;500;600&family=Source+Serif+4:ital,opsz,wght@0,8..60,300..700;1,8..60,300..600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/styles.css">
+
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@type": "SoftwareSourceCode",
+  "name": "OpenBio-Intel",
+  "description": "Open-source AI intelligence platform for clinical trials, regulatory approvals, and biopharma landscape analysis.",
+  "codeRepository": "https://github.com/JAGAN666/OpenBio-Intel",
+  "license": "https://opensource.org/licenses/MIT",
+  "programmingLanguage": ["Python", "TypeScript"],
+  "author": {"@type": "Person", "name": "Jagannath Narayanaswamy"}
+}
+</script>
+</head>
+<body>
+
+<a class="skip" href="#main">Skip to content</a>
+
+<header class="bar">
+  <div class="bar-inner">
+    <a class="wordmark" href="#top" aria-label="OpenBio-Intel, back to top">
+      <svg class="mark" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="10.5" fill="none" stroke="currentColor" stroke-width="1.5"/><path d="M8 7.5c4 2 4 7 8 9M16 7.5c-4 2-4 7-8 9" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+      OpenBio-Intel
+    </a>
+    <nav aria-label="Sections">
+      <a href="#instruments">Instruments</a>
+      <a href="#methods">Methods</a>
+      <a href="#results">Results</a>
+      <a href="#availability">Get started</a>
+    </nav>
+    <a class="gh" href="https://github.com/JAGAN666/OpenBio-Intel">
+      <svg viewBox="0 0 16 16" aria-hidden="true"><path fill="currentColor" d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></svg>
+      <span>View on GitHub</span>
+    </a>
+  </div>
+</header>
+
+<main id="main">
+
+<!-- Title block -->
+<section class="titleblock" id="top">
+  <p class="kicker">Open-source software, MIT licensed</p>
+  <h1>Biopharma intelligence you can check line by line.</h1>
+  <p class="byline">
+    Ask about clinical trials, FDA decisions, literature and filings. OpenBio-Intel answers from the primary records, and every claim links to the record it came from.
+  </p>
+  <div class="actions">
+    <a class="btn btn-primary" href="#availability">Run it in five minutes</a>
+    <a class="btn" href="https://github.com/JAGAN666/OpenBio-Intel">Read the source</a>
+  </div>
+</section>
+
+<!-- Figure 1: the hero demo -->
+<section class="fig1" aria-labelledby="fig1-cap">
+  <div class="row">
+    <div class="main">
+      <figure class="answer" id="answer">
+        <div class="query">
+          <span class="query-label">Question</span>
+          <p class="query-text" id="queryText" data-full="Which trials use pembrolizumab, and what are they combining it with?">Which trials use pembrolizumab, and what are they combining it with?</p>
+        </div>
+        <div class="trace" id="trace" aria-hidden="true">
+          <span data-step="0">Resolving “pembrolizumab” in the RxNorm graph</span>
+          <span data-step="1">Hybrid search over 600K trial records</span>
+          <span data-step="2">Extracting regimens from each matching trial</span>
+          <span data-step="3">Writing the cited answer</span>
+        </div>
+        <div class="response" id="response">
+          <p>
+            <span class="claim" data-ref="1">In first-line non-small-cell lung cancer, pembrolizumab is combined with pemetrexed and platinum chemotherapy<a class="cite" href="#ref-1">1</a></span>
+            <span class="claim" data-ref="2">and, in squamous disease, with carboplatin plus paclitaxel or nab-paclitaxel.<a class="cite" href="#ref-2">2</a></span>
+          </p>
+          <p>
+            <span class="claim" data-ref="3">In advanced renal cell carcinoma it is paired with tyrosine kinase inhibitors: axitinib<a class="cite" href="#ref-3">3</a></span>
+            <span class="claim" data-ref="4">and lenvatinib.<a class="cite" href="#ref-4">4</a></span>
+            <span class="claim" data-ref="5">Its approval history sits under the biologics application BLA 125514.<a class="cite" href="#ref-5">5</a></span>
+          </p>
+        </div>
+        <figcaption id="fig1-cap">
+          <b>Figure 1.</b> The shape of an OpenBio-Intel answer. Each highlighted claim carries a citation to a primary record you can open. This example is illustrative and rendered on this page; run real queries against your own install.
+          <button class="replay" id="replay" type="button">Replay</button>
+        </figcaption>
+      </figure>
+    </div>
+    <aside class="margin refs-live" aria-label="Sources cited in Figure 1">
+      <ol class="sidenotes" id="sidenotes">
+        <li id="ref-1" data-ref="1"><a href="https://clinicaltrials.gov/study/NCT02578680"><code>NCT02578680</code></a><span>ClinicalTrials.gov registry record</span></li>
+        <li id="ref-2" data-ref="2"><a href="https://clinicaltrials.gov/study/NCT02775435"><code>NCT02775435</code></a><span>ClinicalTrials.gov registry record</span></li>
+        <li id="ref-3" data-ref="3"><a href="https://clinicaltrials.gov/study/NCT02853331"><code>NCT02853331</code></a><span>ClinicalTrials.gov registry record</span></li>
+        <li id="ref-4" data-ref="4"><a href="https://clinicaltrials.gov/study/NCT02811861"><code>NCT02811861</code></a><span>ClinicalTrials.gov registry record</span></li>
+        <li id="ref-5" data-ref="5"><a href="https://www.accessdata.fda.gov/scripts/cder/daf/index.cfm?event=overview.process&amp;ApplNo=125514"><code>BLA 125514</code></a><span>openFDA Drugs@FDA application</span></li>
+      </ol>
+    </aside>
+  </div>
+</section>
+
+<!-- Abstract -->
+<section class="abstract" aria-labelledby="abstract-h">
+  <div class="row">
+    <div class="main">
+      <h2 id="abstract-h" class="runin">Abstract</h2>
+      <p>
+        Commercial biopharma intelligence platforms are closed, priced per seat, and opaque about how their answers are produced. OpenBio-Intel is an open alternative. An agent searches <mark>seven hybrid-indexed collections holding more than 630,000 records</mark> plus a drug knowledge graph, extracts structured findings from each matching trial in parallel, and writes an answer in which every row and claim cites its source. It runs on your own infrastructure, so your questions never leave it.
+      </p>
+    </div>
+    <aside class="margin">
+      <dl class="facts">
+        <div><dt>Records indexed</dt><dd>630K+</dd></div>
+        <div><dt>Data sources</dt><dd>11</dd></div>
+        <div><dt>Agent tools</dt><dd>11</dd></div>
+        <div><dt>License</dt><dd>MIT</dd></div>
+      </dl>
+    </aside>
+  </div>
+</section>
+
+<!-- 1 Introduction -->
+<section class="sec" id="intro" aria-labelledby="h1">
+  <div class="row">
+    <div class="main">
+      <h2 id="h1"><span class="num">1</span>Why build this in the open</h2>
+      <p>
+        Trial registries, FDA databases, SEC filings and press releases are public. Most of what commercial platforms sell is the layer on top: extraction, entity resolution and monitoring. That layer decides which trials count, which drug names match and which numbers end up in a slide deck, and today it is a black box.
+      </p>
+      <p>
+        OpenBio-Intel puts that layer in a repository you can read. When a number looks wrong you can trace exactly how it was produced. When you need a new source, you add it. And because it is self-hosted, the questions your team asks, which are competitive intelligence in their own right, stay inside your network.
+      </p>
+    </div>
+    <aside class="margin">
+      <p class="note">The answer synthesis is not allowed to supply a drug’s mechanism from the model’s own memory. If no retrieved record describes it, the row says so.</p>
+    </aside>
+  </div>
+</section>
+
+<!-- 2 Instruments -->
+<section class="sec" id="instruments" aria-labelledby="h2">
+  <div class="row">
+    <div class="main">
+      <h2 id="h2"><span class="num">2</span>Three instruments, one retrieval layer</h2>
+      <p>Each instrument answers a different shape of question. They share the same sources, search and citation rules.</p>
+
+      <h3><span class="num">2.1</span>Smart Table</h3>
+      <p>
+        Ask a question and get a cited briefing plus a comparison grid. The agent fans out one extraction worker per matching trial, shows live progress, and attaches a registry link to every row, with PubMed, SEC or news citations added only when that evidence was actually used. Export the grid to Excel or PowerPoint without re-running anything.
+      </p>
+    </div>
+    <aside class="margin">
+      <p class="note">Interrupted queries resume from their last completed step. Measured: 33 seconds to resume against about 150 seconds to restart.</p>
+    </aside>
+  </div>
+
+  <figure class="wide gif">
+    <div class="frame">
+      <img src="/assets/smart-table-demo.gif" alt="Screen recording of the Smart Table: a pembrolizumab combination question fans out to 114 extraction workers and returns a cited briefing and a comparison grid whose rows link to primary sources." width="1280" height="720" loading="lazy" decoding="async">
+    </div>
+    <figcaption><b>Figure 2.</b> One real query, unedited. Hybrid retrieval over 600K+ trials, then 114 parallel extraction workers, then a cited briefing and a source-linked grid.</figcaption>
+  </figure>
+
+  <div class="row">
+    <div class="main">
+      <h3><span class="num">2.2</span>Indication Landscape</h3>
+      <p>
+        Name a therapeutic area and get a competitive matrix: mechanism or target down the side, development phase across the top. Every cell is grounded in retrieved trials, FDA records and literature, and opens to the records behind it.
+      </p>
+      <figure class="schematic">
+        <div class="scroll">
+          <table class="matrix" aria-label="Schematic of an indication landscape matrix">
+            <thead>
+              <tr><th scope="col">Mechanism</th><th scope="col">Phase 1</th><th scope="col">Phase 2</th><th scope="col">Phase 3</th><th scope="col">Approved</th></tr>
+            </thead>
+            <tbody>
+              <tr><th scope="row">PD-1 / PD-L1 inhibitor</th><td><i class="d3"></i></td><td><i class="d4"></i></td><td><i class="d4"></i></td><td><i class="d3"></i></td></tr>
+              <tr><th scope="row">KRAS G12C inhibitor</th><td><i class="d3"></i></td><td><i class="d2"></i></td><td><i class="d1"></i></td><td><i class="d1"></i></td></tr>
+              <tr><th scope="row">TROP2 antibody–drug conjugate</th><td><i class="d2"></i></td><td><i class="d2"></i></td><td><i class="d2"></i></td><td><i class="d1"></i></td></tr>
+              <tr><th scope="row">EGFR tyrosine kinase inhibitor</th><td><i class="d1"></i></td><td><i class="d2"></i></td><td><i class="d3"></i></td><td><i class="d2"></i></td></tr>
+              <tr><th scope="row">Bispecific T-cell engager</th><td><i class="d4"></i></td><td><i class="d2"></i></td><td></td><td></td></tr>
+            </tbody>
+          </table>
+        </div>
+        <figcaption><b>Figure 3.</b> Layout of a landscape for non-small-cell lung cancer. Dot size stands for the number of programs; the values here are a schematic, not output.</figcaption>
+      </figure>
+
+      <h3><span class="num">2.3</span>Catalyst Tracker</h3>
+      <p>
+        A timeline of upcoming events that move markets: Phase 3 primary completions, PDUFA action dates and advisory committee meetings. PDUFA dates are not published by the FDA, so like every commercial calendar they are mined from company filings and press releases. Here, each event shows the disclosure it came from.
+      </p>
+      <figure class="schematic">
+        <ol class="timeline" aria-label="Schematic of a catalyst timeline">
+          <li><span class="when">Q1</span><span class="what">Phase 3 primary completion</span><span class="src">from the trial registry</span></li>
+          <li><span class="when">Q2</span><span class="what">Advisory committee meeting</span><span class="src">from a company 8-K</span></li>
+          <li><span class="when">Q2</span><span class="what">PDUFA action date</span><span class="src">from a press release</span></li>
+          <li><span class="when">Q4</span><span class="what">Topline readout expected</span><span class="src">from an earnings call</span></li>
+        </ol>
+        <figcaption><b>Figure 4.</b> Event types and where each date is sourced. Schematic.</figcaption>
+      </figure>
+
+      <h3><span class="num">2.4</span>Watchlists</h3>
+      <p>
+        Watch a drug, company, trial or topic. One check compares ClinicalTrials.gov updates and new FDA rejection letters against your last run and shows only what changed.
+      </p>
+    </div>
+    <aside class="margin">
+      <p class="note">FDA Complete Response Letters, the full-text rejection letters published since mid-2025, are indexed and searchable: 459 letters split into 3,410 passages.</p>
+    </aside>
+  </div>
+</section>
+
+<!-- 3 Methods -->
+<section class="sec" id="methods" aria-labelledby="h3">
+  <div class="row">
+    <div class="main">
+      <h2 id="h3"><span class="num">3</span>Methods</h2>
+      <h3><span class="num">3.1</span>Sources</h3>
+      <p>Everything comes from public primary sources. Some are indexed ahead of time, and some are queried live when you ask.</p>
+    </div>
+  </div>
+
+  <div class="row">
+    <div class="main">
+      <div class="scroll">
+        <table class="sources">
+          <caption><b>Table 1.</b> Data sources and how each is used.</caption>
+          <thead><tr><th scope="col">Source</th><th scope="col">What it provides</th><th scope="col">Access</th></tr></thead>
+          <tbody>
+            <tr><th scope="row">ClinicalTrials.gov</th><td>About 600K trial records: design, phase, sponsors, interventions, conditions, dates</td><td>Indexed, plus live</td></tr>
+            <tr><th scope="row">openFDA Drugs@FDA</th><td>Approvals, application numbers, products, ingredients</td><td>Indexed</td></tr>
+            <tr><th scope="row">FDA Complete Response Letters</th><td>Full-text rejection letters, 2025 onward</td><td>Indexed</td></tr>
+            <tr><th scope="row">PubMed Central</th><td>Peer-reviewed full text from the open-access subset</td><td>Indexed</td></tr>
+            <tr><th scope="row">SEC EDGAR</th><td>Pipeline and R&amp;D sections of 10-K and 8-K filings</td><td>Indexed</td></tr>
+            <tr><th scope="row">Corporate news</th><td>Press releases and earnings-call transcripts</td><td>Indexed</td></tr>
+            <tr><th scope="row">FAERS</th><td>Post-market adverse events, with reporting odds ratios and 95% intervals</td><td>Live</td></tr>
+            <tr><th scope="row">Orange Book</th><td>Small-molecule patents and exclusivity, 10,869 products</td><td>Graph</td></tr>
+            <tr><th scope="row">Purple Book</th><td>Biologic exclusivity, 938 applications reconstructed</td><td>Graph</td></tr>
+            <tr><th scope="row">Conference posters</th><td>Efficacy and safety tables that registries don’t carry</td><td>Indexed</td></tr>
+            <tr><th scope="row">AACT</th><td>Exact SQL over all of ClinicalTrials.gov</td><td>Optional</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+    <aside class="margin">
+      <p class="note">FAERS shows association, not causation. The tool says so in every result.</p>
+    </aside>
+  </div>
+
+  <div class="row">
+    <div class="main">
+      <h3><span class="num">3.2</span>From question to cited answer</h3>
+      <p>
+        A classifier first checks that the question is in scope. A tool-calling agent then decides which sources apply. Drug names are resolved through a Neo4j graph built from RxNorm, so “Keytruda”, “pembrolizumab” and “MK-3475” match the same trials by exact traversal rather than by similarity. Text search fuses keyword and embedding results, and a cross-encoder reranks them. One extraction worker runs per matching record, and a final step writes the answer with its citations.
+      </p>
+    </div>
+  </div>
+
+  <figure class="wide diagram">
+    <div class="scroll">
+      <svg class="flow" viewBox="0 0 1080 310" role="img" aria-labelledby="flow-t flow-d">
+        <title id="flow-t">Pipeline from question to cited answer</title>
+        <desc id="flow-d">A question passes an intent gate, then a tool-calling agent queries Qdrant, Neo4j and live APIs. Results fan out to parallel extraction workers, which a synthesis step reduces into a cited answer.</desc>
+        <defs>
+          <marker id="ah" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" class="ah"/></marker>
+        </defs>
+        <g class="nodes">
+          <rect x="10" y="60" width="130" height="64" rx="3"/><text x="75" y="88">Question</text><text x="75" y="108" class="sub">natural language</text>
+          <rect x="180" y="60" width="130" height="64" rx="3"/><text x="245" y="88">Intent gate</text><text x="245" y="108" class="sub">in-domain check</text>
+          <rect x="350" y="60" width="150" height="64" rx="3" class="key"/><text x="425" y="88">Agent</text><text x="425" y="108" class="sub">chooses tools</text>
+          <rect x="540" y="60" width="170" height="64" rx="3"/><text x="625" y="88">Extraction</text><text x="625" y="108" class="sub">one worker per record</text>
+          <rect x="750" y="60" width="140" height="64" rx="3"/><text x="820" y="88">Synthesis</text><text x="820" y="108" class="sub">grounded only</text>
+          <rect x="930" y="60" width="140" height="64" rx="3" class="out"/><text x="1000" y="88">Cited answer</text><text x="1000" y="108" class="sub">table + briefing</text>
+
+          <rect x="250" y="220" width="150" height="70" rx="3" class="store"/><text x="325" y="250">Qdrant</text><text x="325" y="270" class="sub">7 hybrid collections</text>
+          <rect x="425" y="220" width="150" height="70" rx="3" class="store"/><text x="500" y="250">Neo4j</text><text x="500" y="270" class="sub">RxNorm + exclusivity</text>
+          <rect x="600" y="220" width="150" height="70" rx="3" class="store"/><text x="675" y="250">Live APIs</text><text x="675" y="270" class="sub">FAERS, registry</text>
+        </g>
+        <g class="edges">
+          <path d="M140 92H178"/><path d="M310 92H348"/><path d="M500 92H538"/><path d="M710 92H748"/><path d="M890 92H928"/>
+          <path d="M390 124C390 170 325 170 325 218"/><path d="M425 124C425 170 500 170 500 218"/><path d="M465 124C465 170 675 170 675 218"/>
+        </g>
+        <g class="fan" aria-hidden="true">
+          <path d="M565 38v20M585 38v20M605 38v20M625 38v20M645 38v20M665 38v20M685 38v20"/>
+        </g>
+        <text x="625" y="26" class="sub">in parallel, sharing a cached prompt</text>
+      </svg>
+    </div>
+    <figcaption><b>Figure 5.</b> The pipeline. Queries run as durable jobs on a Postgres queue, so a refreshed browser tab reattaches to a running query without losing progress.</figcaption>
+  </figure>
+</section>
+
+<!-- 4 Results -->
+<section class="sec" id="results" aria-labelledby="h4">
+  <div class="row">
+    <div class="main">
+      <h2 id="h4"><span class="num">4</span>Results</h2>
+      <p>
+        Retrieval quality is measured, not asserted. The golden set, harness and baseline are committed to the repository, and CI runs the comparison as a regression gate. Ground truth comes from exact filters on the stored records, so the retriever being tested plays no part in defining what counts as relevant.
+      </p>
+      <p>
+        Search using embeddings alone found nothing relevant for 13 of 50 realistic analyst queries, mostly ones naming exact development codes such as <code>ABX464</code> or <code>BBO-10203</code> that embeddings blur. Adding keyword search and reranking cut that to 7 and lifted mean recall by more than a third.
+      </p>
+
+      <figure class="bars" aria-labelledby="bars-cap">
+        <div class="bar-row">
+          <span class="bar-label">Embeddings only</span>
+          <span class="bar-track"><span class="bar-fill" style="--v:.44"></span></span>
+          <span class="bar-val">0.44</span>
+        </div>
+        <div class="bar-row">
+          <span class="bar-label">+ keyword search, fused</span>
+          <span class="bar-track"><span class="bar-fill" style="--v:.59"></span></span>
+          <span class="bar-val">0.59</span>
+        </div>
+        <div class="bar-row">
+          <span class="bar-label">+ cross-encoder rerank</span>
+          <span class="bar-track"><span class="bar-fill is-best" style="--v:.61"></span></span>
+          <span class="bar-val">0.61</span>
+        </div>
+        <figcaption id="bars-cap"><b>Figure 6.</b> Mean recall at 20 on the 50-query golden set over the full 597K-point corpus.</figcaption>
+      </figure>
+
+      <div class="scroll">
+        <table class="results">
+          <caption><b>Table 2.</b> Retrieval configurations compared.</caption>
+          <thead><tr><th scope="col">Configuration</th><th scope="col" class="n">Recall@20</th><th scope="col" class="n">Hit rate</th><th scope="col" class="n">No result</th></tr></thead>
+          <tbody>
+            <tr><th scope="row">Embeddings only</th><td class="n">0.44</td><td class="n">0.74</td><td class="n">13 / 50</td></tr>
+            <tr><th scope="row">+ keyword search, fused</th><td class="n">0.59</td><td class="n">0.84</td><td class="n">8 / 50</td></tr>
+            <tr class="best"><th scope="row">+ cross-encoder rerank</th><td class="n">0.61</td><td class="n">0.86</td><td class="n">7 / 50</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+    <aside class="margin">
+      <p class="note">Fifty queries make a regression harness, not an academic benchmark. The point is that every change to retrieval is measured on a fixed set and shows up as a reviewable diff.</p>
+    </aside>
+  </div>
+</section>
+
+<!-- 5 Discussion -->
+<section class="sec" id="discussion" aria-labelledby="h5">
+  <div class="row">
+    <div class="main">
+      <h2 id="h5"><span class="num">5</span>Discussion</h2>
+      <p>
+        Mature platforms such as Cortellis and AlphaSense have decades of hand-curated records, consensus forecasts, investigator databases and support teams behind them. OpenBio-Intel does not try to fake any of that. It is the better choice when you need intelligence you can audit, host yourself and extend.
+      </p>
+      <div class="scroll">
+        <table class="compare">
+          <caption><b>Table 3.</b> OpenBio-Intel and typical commercial platforms.</caption>
+          <thead><tr><th scope="col"></th><th scope="col">OpenBio-Intel</th><th scope="col">Commercial platforms</th></tr></thead>
+          <tbody>
+            <tr><th scope="row">Source code</th><td>Open, MIT license</td><td>Proprietary</td></tr>
+            <tr><th scope="row">Hosting</th><td>Your infrastructure</td><td>Vendor’s cloud</td></tr>
+            <tr><th scope="row">Your queries</th><td>Stay on your network</td><td>Seen by the vendor</td></tr>
+            <tr><th scope="row">Citations</th><td>Every claim links to a record</td><td>Varies</td></tr>
+            <tr><th scope="row">Cost</th><td>Your servers plus model API usage</td><td>Per-seat subscription</td></tr>
+            <tr><th scope="row">Agent access</th><td>Built-in MCP server</td><td>Built for human UI</td></tr>
+            <tr><th scope="row">Forecasts and deal terms</th><td>Not offered</td><td>Curated by analysts</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <h3><span class="num">5.1</span>Known limitations</h3>
+      <ul class="limits">
+        <li>Purple Book coverage is partial, because the FDA publishes no complete extract. Results say so.</li>
+        <li>ASCO, ESMO and AACR abstracts are not ingested; their licenses forbid redistribution. Readouts are covered through company press releases and 8-Ks.</li>
+        <li>PDUFA dates are extracted from company disclosures, not official FDA data. Each one carries its source.</li>
+        <li>The quickstart seed is 100 records, enough to try the interface. A research-grade corpus takes hours to ingest and has real embedding cost.</li>
+      </ul>
+    </div>
+  </div>
+</section>
+
+<!-- 6 Availability -->
+<section class="sec" id="availability" aria-labelledby="h6">
+  <div class="row">
+    <div class="main">
+      <h2 id="h6"><span class="num">6</span>Availability</h2>
+      <h3><span class="num">6.1</span>Run it locally</h3>
+      <p>You need Docker, an OpenAI key for embeddings and an Anthropic key for the agent. The script starts Qdrant, Neo4j, the API and the web app, then loads a small seed so you can try a query straight away at <code>localhost:3000</code>.</p>
+      <div class="code">
+        <button class="copy" type="button" data-copy="quickstart">Copy</button>
+<pre id="quickstart"><code>git clone https://github.com/JAGAN666/OpenBio-Intel.git
+cd OpenBio-Intel
+./quickstart.sh</code></pre>
+      </div>
+
+      <h3><span class="num">6.2</span>Use it from Claude</h3>
+      <p>The bundled MCP server exposes every tool and the full Smart Table pipeline to Claude Desktop, Claude Code or any MCP client, running against your own data.</p>
+      <div class="code">
+        <button class="copy" type="button" data-copy="mcp">Copy</button>
+<pre id="mcp"><code>{
+  "mcpServers": {
+    "openbio-intel": {
+      "command": "uv",
+      "args": ["run", "--project", "/path/to/OpenBio-Intel",
+               "python", "mcp_server.py"]
+    }
+  }
+}</code></pre>
+      </div>
+
+      <h3><span class="num">6.3</span>Deploy it</h3>
+      <p>The repository includes a reference AWS deployment in Terraform (ECS Fargate, a load balancer and EFS) with a GitHub Actions pipeline. It is optional; Docker Compose on a single machine works too.</p>
+    </div>
+    <aside class="margin">
+      <p class="note">The model provider is a single setting: Anthropic, Kimi or NVIDIA-hosted models handle orchestration.</p>
+    </aside>
+  </div>
+</section>
+
+<!-- References & citation -->
+<section class="sec refs" id="references" aria-labelledby="h7">
+  <div class="row">
+    <div class="main">
+      <h2 id="h7">Cite this software</h2>
+      <p>If OpenBio-Intel supports your research, please cite it.</p>
+      <div class="code">
+        <button class="copy" type="button" data-copy="bibtex">Copy</button>
+<pre id="bibtex"><code>@software{narayanaswamy_openbiointel,
+  author  = {Narayanaswamy, Jagannath},
+  title   = {OpenBio-Intel},
+  version = {0.1.0},
+  license = {MIT},
+  url     = {https://github.com/JAGAN666/OpenBio-Intel}
+}</code></pre>
+      </div>
+      <p class="contrib">Created and maintained by Jagannath Narayanaswamy. Contributions are welcome: see <a href="https://github.com/JAGAN666/OpenBio-Intel/blob/main/CONTRIBUTING.md">the contributing guide</a> or <a href="https://github.com/JAGAN666/OpenBio-Intel/issues">open an issue</a>.</p>
+    </div>
+  </div>
+</section>
+
+</main>
+
+<footer class="foot">
+  <div class="foot-inner">
+    <span class="wordmark small">OpenBio-Intel</span>
+    <nav aria-label="Footer">
+      <a href="https://github.com/JAGAN666/OpenBio-Intel">GitHub</a>
+      <a href="https://github.com/JAGAN666/OpenBio-Intel/tree/main/docs">Documentation</a>
+      <a href="https://github.com/JAGAN666/OpenBio-Intel/blob/main/LICENSE">MIT License</a>
+      <a href="https://github.com/JAGAN666/OpenBio-Intel/blob/main/SECURITY.md">Security</a>
+    </nav>
+    <p class="disclaimer">For research use. Not medical advice. OpenBio-Intel is not affiliated with the FDA, NIH, NLM or SEC.</p>
+  </div>
+</footer>
+
+<div class="toast" id="toast" role="status" aria-live="polite"></div>
+<script src="/app.js" defer></script>
+</body>
+</html>
