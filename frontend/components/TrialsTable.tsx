@@ -97,22 +97,70 @@ function SourceChips({ sources }: { sources?: SourceCitation[] }) {
 }
 
 /**
- * The Badge Rule: branch on the boolean, never on the prose.
- * `false` does NOT mean "no data" — the text below still carries trial design
- * detail, so the badge is subdued rather than an error state.
+ * Provenance badge for the Mechanism cell. The label is the SOURCE tier the
+ * backend verified, never an inference from the prose:
+ *   kb            -> curated drug database (Open Targets/ChEMBL, IUPHAR)
+ *   trial_text    -> quoted from this trial's own record (span-verified)
+ *   literature    -> quoted from a fused excerpt (span-verified)
+ *   model_knowledge -> textbook pharmacology the model supplied; UNVERIFIED
+ *   unknown       -> nothing on record
  */
-function MechanismBadge({ described }: { described: boolean }) {
-  return described ? (
-    <span className="inline-flex items-center gap-1 rounded-md border border-emerald-200 bg-emerald-50 px-2 py-0.5 text-[0.7rem] font-semibold uppercase tracking-wide text-emerald-700 dark:border-emerald-900/60 dark:bg-emerald-950/40 dark:text-emerald-400">
-      <Target className="h-3 w-3" aria-hidden />
-      Target Identified
-    </span>
-  ) : (
-    <span className="inline-flex items-center gap-1 rounded-md border border-slate-200 bg-slate-100 px-2 py-0.5 text-[0.7rem] font-semibold uppercase tracking-wide text-slate-500 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-400">
-      <CircleDashed className="h-3 w-3" aria-hidden />
-      Design Details Only
+const MECHANISM_BADGES: Record<string, { label: string; cls: string; verified: boolean }> = {
+  kb: {
+    label: "Database",
+    verified: true,
+    cls: "border-emerald-200 bg-emerald-50 text-emerald-700 dark:border-emerald-900/60 dark:bg-emerald-950/40 dark:text-emerald-400",
+  },
+  trial_text: {
+    label: "Cited · trial",
+    verified: true,
+    cls: "border-emerald-200 bg-emerald-50 text-emerald-700 dark:border-emerald-900/60 dark:bg-emerald-950/40 dark:text-emerald-400",
+  },
+  literature: {
+    label: "Cited · literature",
+    verified: true,
+    cls: "border-sky-200 bg-sky-50 text-sky-700 dark:border-sky-900/60 dark:bg-sky-950/40 dark:text-sky-400",
+  },
+  model_knowledge: {
+    label: "Model · unverified",
+    verified: false,
+    cls: "border-amber-200 bg-amber-50 text-amber-700 dark:border-amber-900/60 dark:bg-amber-950/40 dark:text-amber-400",
+  },
+  unknown: {
+    label: "Not on record",
+    verified: false,
+    cls: "border-slate-200 bg-slate-100 text-slate-500 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-400",
+  },
+};
+
+function MechanismBadge({ source, evidence }: { source?: string; evidence?: string }) {
+  const b = MECHANISM_BADGES[source ?? "unknown"] ?? MECHANISM_BADGES.unknown;
+  const Icon = b.verified ? Target : CircleDashed;
+  return (
+    <span
+      title={evidence || undefined}
+      className={
+        "inline-flex items-center gap-1 rounded-md border px-2 py-0.5 text-[0.7rem] font-semibold uppercase tracking-wide " +
+        b.cls
+      }
+    >
+      <Icon className="h-3 w-3" aria-hidden />
+      {b.label}
     </span>
   );
+}
+
+/** "Why this row": one line per asked constraint with its verdict. */
+function constraintTitle(row: TrialRow): string | undefined {
+  const cs = row.constraints ?? [];
+  if (cs.length === 0) return undefined;
+  return cs
+    .map((c) => {
+      const mark = c.verdict === "satisfied" ? "✓" : c.verdict === "violated" ? "✗" : "?";
+      const ev = c.evidence ? ` — ${c.evidence}` : "";
+      return `${mark} ${c.constraint}${ev}`;
+    })
+    .join("\n");
 }
 
 // Explicitly typed: each accessor yields a different TValue (string,
@@ -129,6 +177,7 @@ const columns: ColumnDef<typeof features, TrialRow, any>[] = [
           href={`${CTGOV}${id}`}
           target="_blank"
           rel="noopener noreferrer"
+          title={constraintTitle(info.row.original)}
           className="group inline-flex items-center gap-1 font-mono text-sm text-sky-700 hover:text-sky-900 dark:text-sky-400 dark:hover:text-sky-300"
         >
           {id}
@@ -203,14 +252,31 @@ const columns: ColumnDef<typeof features, TrialRow, any>[] = [
       );
     },
   }),
+  columnHelper.accessor("mechanism", {
+    header: "Mechanism",
+    enableSorting: false,
+    cell: (info) => {
+      const r = info.row.original;
+      const text = info.getValue() || "";
+      return (
+        <div className="min-w-[14rem] max-w-[20rem] space-y-1.5">
+          <MechanismBadge source={r.mechanism_source} evidence={r.mechanism_evidence} />
+          {text ? (
+            <p className="text-sm leading-snug text-slate-700 dark:text-slate-300">{text}</p>
+          ) : (
+            <p className="text-xs text-slate-400 dark:text-slate-600">—</p>
+          )}
+        </div>
+      );
+    },
+  }),
   columnHelper.accessor("mechanism_or_findings", {
-    header: "Mechanism / Findings",
+    header: "Findings",
     enableSorting: false,
     cell: (info) => (
-      <div className="min-w-[22rem] space-y-1.5">
-        <MechanismBadge described={info.row.original.mechanism_described} />
-        <p className="text-sm leading-relaxed text-slate-600 dark:text-slate-400">{info.getValue()}</p>
-      </div>
+      <p className="min-w-[20rem] text-sm leading-relaxed text-slate-600 dark:text-slate-400">
+        {info.getValue()}
+      </p>
     ),
   }),
   columnHelper.accessor("sources", {
@@ -236,6 +302,7 @@ export default function TrialsTable({
   const table = useTable({ features, columns, data });
 
   const described = data.filter((r) => r.mechanism_described).length;
+  const modelOnly = data.filter((r) => r.mechanism_source === "model_knowledge").length;
   const truncated = totalMatching !== undefined && totalMatching > data.length;
 
   return (
@@ -254,8 +321,11 @@ export default function TrialsTable({
           ) : (
             <>{data.length} trials</>
           )}{" "}
-          · {described} with target identified · {data.length - described} design
-          details only
+          · {described} mechanism verified
+          {modelOnly > 0 && <> · {modelOnly} model-supplied</>}
+          {data.length - described - modelOnly > 0 && (
+            <> · {data.length - described - modelOnly} not on record</>
+          )}
         </span>
       </header>
 

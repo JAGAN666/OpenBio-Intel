@@ -16,6 +16,7 @@ retrieval left 13/50 queries with ZERO relevant results in top-20.
 """
 from __future__ import annotations
 
+import re
 from typing import Iterable
 
 from qdrant_client import models as qmodels
@@ -63,16 +64,24 @@ def trial_sparse_text(payload: dict) -> str:
     """
     conditions = payload.get("conditions") or []
     interventions = payload.get("interventions") or []
-    iv_names = ", ".join(
-        f"{iv.get('type', '')}: {iv.get('name', '')}"
-        for iv in interventions if isinstance(iv, dict)
-    )
+    iv_bits = []
+    for iv in interventions:
+        if not isinstance(iv, dict):
+            continue
+        bit = f"{iv.get('type', '')}: {iv.get('name', '')}"
+        if iv.get("otherNames"):
+            bit += f" ({', '.join(iv['otherNames'][:4])})"
+        if iv.get("description"):
+            bit += f" -- {iv['description'][:300]}"
+        iv_bits.append(bit)
     parts = [
         payload.get("NCTId") or "",
         payload.get("BriefTitle") or "",
+        payload.get("Acronym") or "",
         f"Sponsor: {payload.get('LeadSponsorName')}" if payload.get("LeadSponsorName") else "",
         f"Conditions: {', '.join(c for c in conditions if isinstance(c, str))}",
-        f"Interventions: {iv_names}",
+        f"Keywords: {', '.join(payload.get('keywords') or [])}" if payload.get("keywords") else "",
+        f"Interventions: {'; '.join(iv_bits)}",
         f"Study Type: {payload.get('studyType') or ''}",
         f"Summary: {payload.get('BriefSummary') or ''}",
     ]
@@ -117,7 +126,7 @@ def sparse_text_builder_for(collection: str):
     """Payload->text builder for a collection, or None if that collection
     is not (yet) part of the hybrid rollout. Tolerates the migration's
     `_hybrid` suffix so `clinical_trials_hybrid` resolves like its alias."""
-    base = collection[:-len("_hybrid")] if collection.endswith("_hybrid") else collection
+    base = re.sub(r"(_hybrid|_v\d+)+$", "", collection)
     return _TEXT_BUILDERS.get(base)
 
 

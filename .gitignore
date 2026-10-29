@@ -77,3 +77,8 @@ terraform/crash.log
 .state-backups/
 postgres_data/
 site/
+
+# drug mechanism KB source downloads (build_drug_kb.py re-fetches them)
+data/drug_kb/
+# v3 migration raw pages
+data/raw/v3_migration/

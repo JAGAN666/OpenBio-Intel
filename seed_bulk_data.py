@@ -89,11 +89,11 @@ from fetch_and_embed_trials import (
     QDRANT_PORT,
     S3_BUCKET,
     archive_to_s3,
-    build_embedding_text,
+    build_record,
     ensure_collection,
-    extract_interventions,
     index_records,
 )
+import ct_schema
 
 try:
     from dotenv import load_dotenv
@@ -111,17 +111,7 @@ BUILD_KG_SCRIPT = PROJECT_ROOT / "build_kg.py"
 # not a conservative guess.
 CT_PAGE_SIZE = 1000
 CT_API_URL = "https://clinicaltrials.gov/api/v2/studies"
-CT_API_FIELDS = [
-    "protocolSection.identificationModule.nctId",
-    "protocolSection.identificationModule.briefTitle",
-    "protocolSection.designModule.phases",
-    "protocolSection.statusModule.overallStatus",
-    "protocolSection.sponsorCollaboratorsModule.leadSponsor.name",
-    "protocolSection.descriptionModule.briefSummary",
-    "protocolSection.conditionsModule.conditions",
-    "protocolSection.armsInterventionsModule.interventions",
-    "protocolSection.designModule.studyType",
-]
+CT_API_FIELDS = ct_schema.API_FIELDS  # shared with every ingest path
 CT_S3_PREFIX = "raw/clinical_trials/bulk_seed"
 
 OPENFDA_MANIFEST_URL = "https://api.fda.gov/download.json"
@@ -162,42 +152,10 @@ def _fetch_ct_page(session: requests.Session, page_token: str | None) -> dict:
 
 def _ct_record(study: dict, s3_key: str | None) -> dict | None:
     """Build the same {document, id, payload} shape
-    fetch_and_embed_trials.py's build_records() produces, for exactly ONE
-    study -- reused here instead of re-derived so a bulk-seeded point is
-    byte-for-byte indistinguishable from one the incremental pipeline wrote."""
-    proto = study.get("protocolSection", {})
-    ident = proto.get("identificationModule", {})
-    nct_id = ident.get("nctId")
-    if not nct_id:
-        return None
-    summary = (proto.get("descriptionModule", {}).get("briefSummary") or "").strip()
-    if not summary:
-        return None
-
-    raw_phases = proto.get("designModule", {}).get("phases", []) or []
-    conditions = proto.get("conditionsModule", {}).get("conditions", []) or []
-    interventions = extract_interventions(proto)
-    study_type = proto.get("designModule", {}).get("studyType")
-
-    return {
-        "document": build_embedding_text(conditions, interventions, study_type, summary),
-        "id": str(uuid.uuid5(NCT_NAMESPACE, nct_id)),
-        "payload": {
-            "NCTId": nct_id,
-            "BriefTitle": ident.get("briefTitle") or "(no title)",
-            "Phase": [PHASE_LABELS.get(p, p) for p in raw_phases],
-            "OverallStatus": proto.get("statusModule", {}).get("overallStatus"),
-            "LeadSponsorName": proto.get("sponsorCollaboratorsModule", {})
-                                     .get("leadSponsor", {}).get("name"),
-            "conditions": conditions,
-            "interventions": interventions,
-            "studyType": study_type,
-            "interventionNames": [iv["name"] for iv in interventions],
-            "BriefSummary": summary,
-            "SourceURL": f"https://clinicaltrials.gov/study/{nct_id}",
-            "SourceS3Key": s3_key,
-        },
-    }
+    fetch_and_embed_trials.py's build_record() produces -- reused here
+    instead of re-derived so a bulk-seeded point is byte-for-byte
+    indistinguishable from one the incremental pipeline wrote."""
+    return build_record(study, s3_key)
 
 
 def _run_build_kg(batch_path: Path, verbose: bool) -> None:
@@ -333,7 +291,9 @@ def _drugsfda_record(r: dict) -> dict | None:
         f"Sponsor: {r.get('sponsor_name') or 'Unknown'}\n"
         f"Brand names: {', '.join(brand_names) or 'Not specified'}\n"
         f"Active ingredients: {', '.join(ingredients) or 'Not specified'}\n"
-        f"Dosage forms: {', '.join(dosage_forms) or 'Not specified'}"
+        f"Dosage forms: {', '.join(dosage_forms) or 'Not specified'}\n"
+        f"Pharmacologic class: "
+        f"{', '.join((openfda.get('pharm_class_epc') or []) + (openfda.get('pharm_class_moa') or [])) or 'Not specified'}"
     )
     return {
         "document": document,
@@ -346,6 +306,13 @@ def _drugsfda_record(r: dict) -> dict | None:
             "DosageForms": dosage_forms,
             "Rxcui": openfda.get("rxcui", []),
             "ProductType": openfda.get("product_type", []),
+            # FDA Established Pharmacologic Class -- the only structured
+            # mechanism-of-action labels the registry corpus carries.
+            "PharmClassMoA": openfda.get("pharm_class_moa", []),
+            "PharmClassEPC": openfda.get("pharm_class_epc", []),
+            "PharmClassCS": openfda.get("pharm_class_cs", []),
+            "Unii": openfda.get("unii", []),
+            "SubstanceName": openfda.get("substance_name", []),
             "SourceURL": f"https://www.accessdata.fda.gov/scripts/cder/daf/index.cfm"
                         f"?event=overview.process&ApplNo={app_no.replace('NDA', '').replace('ANDA', '').replace('BLA', '')}",
         },

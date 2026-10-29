@@ -64,7 +64,8 @@ def _initial_research_state(query: str) -> dict:
         "retrieved_trials": [], "extracted_rows": [], "retrieved_literature": [],
         "retrieved_fda": [], "retrieved_crls": [], "retrieved_safety": [],
         "retrieved_exclusivity": [], "retrieved_stats": [],
-        "asked_entities": [], "prepared_pools": None,
+        "asked_entities": [], "asked_constraints": {},
+        "enforced_constraints": [], "prepared_pools": None,
         "trial_total_matching": None, "coverage_note": None,
     }
 

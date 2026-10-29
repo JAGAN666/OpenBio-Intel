@@ -1,0 +1,47 @@
+{"name": "pembrolizumab", "tier": "approved", "expect_regex": "pd-?1|programmed cell death protein 1"}
+{"name": "Keytruda", "tier": "approved", "expect_regex": "pd-?1|programmed cell death protein 1"}
+{"name": "MK-3475", "tier": "approved", "expect_regex": "pd-?1|programmed cell death protein 1"}
+{"name": "nivolumab", "tier": "approved", "expect_regex": "pd-?1|programmed cell death protein 1"}
+{"name": "atezolizumab", "tier": "approved", "expect_regex": "pd-?l1|programmed cell death 1 ligand"}
+{"name": "ipilimumab", "tier": "approved", "expect_regex": "ctla-?4|cytotoxic t-lymphocyte"}
+{"name": "semaglutide", "tier": "approved", "expect_regex": "glp-?1|glucagon-like peptide"}
+{"name": "Wegovy", "tier": "approved", "expect_regex": "glp-?1|glucagon-like peptide"}
+{"name": "tirzepatide", "tier": "approved", "expect_regex": "glp-?1|glucagon-like peptide|gastric inhibitory polypeptide|gip"}
+{"name": "liraglutide", "tier": "approved", "expect_regex": "glp-?1|glucagon-like peptide"}
+{"name": "metformin", "tier": "approved", "expect_regex": "complex i|ampk|glycerol-3-phosphate|mitochondri"}
+{"name": "Metformin 500mg tablets", "tier": "approved", "expect_regex": "complex i|ampk|glycerol-3-phosphate|mitochondri"}
+{"name": "sotorasib", "tier": "approved", "expect_regex": "kras"}
+{"name": "AMG 510", "tier": "approved", "expect_regex": "kras"}
+{"name": "adagrasib", "tier": "approved", "expect_regex": "kras"}
+{"name": "osimertinib", "tier": "approved", "expect_regex": "egfr|epidermal growth factor receptor"}
+{"name": "cetuximab", "tier": "approved", "expect_regex": "egfr|epidermal growth factor receptor"}
+{"name": "trastuzumab", "tier": "approved", "expect_regex": "her2|erbb2|receptor tyrosine-protein kinase erbb-2"}
+{"name": "trastuzumab deruxtecan", "tier": "approved", "expect_regex": "her2|erbb2|topoisomerase"}
+{"name": "Enhertu", "tier": "approved", "expect_regex": "her2|erbb2|topoisomerase"}
+{"name": "datopotamab deruxtecan", "tier": "approved", "expect_regex": "trop-?2|tumor-associated calcium signal transducer 2|tacstd2|topoisomerase"}
+{"name": "lenvatinib", "tier": "approved", "expect_regex": "vegfr|vascular endothelial growth factor receptor|flt|kdr"}
+{"name": "Lenvatinib (E7080)", "tier": "approved", "expect_regex": "vegfr|vascular endothelial growth factor receptor|flt|kdr"}
+{"name": "dupilumab", "tier": "approved", "expect_regex": "il-?4|interleukin-4 receptor|il4r"}
+{"name": "risankizumab", "tier": "approved", "expect_regex": "il-?23|interleukin-23"}
+{"name": "upadacitinib", "tier": "approved", "expect_regex": "jak|janus kinase"}
+{"name": "Rinvoq", "tier": "approved", "expect_regex": "jak|janus kinase"}
+{"name": "vedolizumab", "tier": "approved", "expect_regex": "integrin|alpha4beta7|itga4|itgb7"}
+{"name": "ozanimod", "tier": "approved", "expect_regex": "sphingosine|s1p"}
+{"name": "lecanemab", "tier": "approved", "expect_regex": "amyloid|app"}
+{"name": "donanemab", "tier": "approved", "expect_regex": "amyloid|app"}
+{"name": "zolbetuximab", "tier": "approved", "expect_regex": "claudin|cldn18"}
+{"name": "cabotegravir", "tier": "approved", "expect_regex": "integrase"}
+{"name": "apixaban", "tier": "approved", "expect_regex": "factor xa|coagulation factor x|f10"}
+{"name": "empagliflozin", "tier": "approved", "expect_regex": "sglt2|sodium/glucose cotransporter 2|slc5a2"}
+{"name": "BMS-986278", "tier": "investigational", "expect_regex": "lpa1|lysophosphatidic acid receptor 1|lpar1"}
+{"name": "admilparant", "tier": "investigational", "expect_regex": "lpa1|lysophosphatidic acid receptor 1|lpar1"}
+{"name": "ABX464", "tier": "investigational", "expect_regex": "cap binding|ncbp|mir-?124|splic"}
+{"name": "obefazimod", "tier": "investigational", "expect_regex": "cap binding|ncbp|mir-?124|splic"}
+{"name": "NVL-655", "tier": "investigational", "expect_regex": "alk"}
+{"name": "olomorasib", "tier": "investigational", "expect_regex": "kras"}
+{"name": "LY3537982", "tier": "investigational", "expect_regex": "kras"}
+{"name": "elecoglipron", "tier": "investigational", "expect_regex": "glp-?1|glucagon-like peptide"}
+{"name": "orforglipron", "tier": "investigational", "expect_regex": "glp-?1|glucagon-like peptide"}
+{"name": "retatrutide", "tier": "investigational", "expect_regex": "glp-?1|glucagon|gip"}
+{"name": "XYZ-000001", "tier": "unknown", "expect_regex": null}
+{"name": "Placebo matching BMS-986278", "tier": "placebo", "expect_regex": null}
